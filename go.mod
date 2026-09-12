@@ -4,6 +4,8 @@ go 1.25.11
 
 require (
 	github.com/brickKit/be-sdk-go v0.2.7
+	github.com/brickKit/mdm-customer v1.0.5
+	github.com/brickKit/mdm-product v1.0.6
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats.go v1.53.1
