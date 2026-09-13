@@ -88,21 +88,23 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   不到。gRPC 侧本项目目前没有任何鉴权（鉴权只在 REST 层），所以直接拨号
   验证网络可达性是自洽的，不构成绕过鉴权。
 
+## 现状补充（阶段四 Task 8 完成，2026-09-13）
+
+Task 6 验证阶段那 3 个手动 `docker run` 起的容器，已经换成真正的
+`infra/shell-compose.yml`（父仓库根目录）——接上了健康检查（`wget` 打
+`SHELL_HEALTH_PORT`，不是 `--spider`：真机撞到过 FastAPI 的 `GET /` 不
+支持 HEAD、`--spider` 发 HEAD 请求会被 405 误判成不健康，Go 侧的裸
+`http.HandlerFunc` 因为不区分方法所以没暴露这个问题，Python 侧才踩到）、
+`be-net`（直连 `be-postgres`/`be-nats` 容器 DNS，不再靠 `host.docker.internal`
+间接寻址）、`SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 的自动生成与挂载
+（`make shell-gen`）。根 `Makefile` 的 `make shell-up`/`make shell-down`
+把设计书 §13.9 的互斥规矩写进了命令本身：`shell-up` 第一步无条件
+`brickkit down`，`teardown-up` 第一步无条件停外壳——两个方向都真机验证过
+`docker ps` 零残留。完整细节见父仓库 `docs/plans/04-阶段四-做外壳验拆回.md`
+Task 8。
+
 ## 待办（阶段四后续任务）
 
-⚠️ **当前真机跑着的 3 个外壳容器是手动 `docker run` 起的，不是 `shell-compose.yml`
-（那是 Task 8 的产出）**——没有健康检查探针、没有重启策略、没有跟
-`docker-compose.infra.yml`/`brickkit up` 接成一条启停链，`SHELL_CONFIG_JSON`/
-`SHELL_ENV_JSON` 也是手动挂载的宿主机文件，不是部署流程自动生成/分发的。
-这是刻意的：Task 6 只要求证明"原子式切换到 local: true 之后，真机能起
-3 个外壳容器、11 个模块都在里面正常跑"，编排层面的规范化是 Task 8 自己
-的范围，不要在这里提前把两件事混在一起判断"做完了"。
-
-- Task 7：`infra-print` 迁进 `be-shell-python`（Python 外壳，与本仓库无关）。
-- Task 8：三份 compose 编排（`docker-compose.infra.yml` + `brickkit up` 生成的
-  compose + `be-ops` 产出 8 的 `shell-compose.yml`）+ 启停脚本——把上面那 3 个
-  手动容器换成真正的 `shell-compose.yml`，接上健康检查、`be-net`、
-  `SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 的自动分发。
 - Task 9：合并态业务闭环真机验证（附录 E 全链路）——包括驱动一次真实
   authenticated 的 `CreateOpportunity`，验证跨外壳依赖在**带真实权限判定**
   的完整链路下也能正常工作，不只是网络层面可达。

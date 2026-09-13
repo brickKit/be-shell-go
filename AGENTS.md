@@ -46,15 +46,14 @@
   一个模块的数据，本来就不该来自 `SHELL_ENV_JSON`（那份文件是"每个模块自己的
   env map"，见 `internal/shell.ModuleSpec.Env` 的字段注释），现状是符合设计的
   终态，不是待办。
-- `HealthPort` 目前默认写死 `18888`——Task 8 的 `be-ops` 产出 8（`shell-compose.yml`）
-  落地后，这个端口该是多少、健康检查探针的具体命令，由那一步决定，这里只是先给
-  骨架一个能跑起来验证的默认值（阶段四 Task 6 真机验证时手动 `docker run` 传的
-  也是这个默认值）。
-- `SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 两个文件目前是真机验证时手动
-  `docker run -v` 挂载进容器的——Task 8 的 `shell-compose.yml` 落地后，这两个文件
-  该怎么生成、挂载到哪、要不要每次部署重新生成，由那一步决定，这里的 `main.go`
-  已经按"读这两个环境变量指向的路径"这个约定写好了，不需要因为编排方式改变而
-  改代码。
+- `HealthPort`/`SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 现在由父仓库根目录的
+  `infra/shell-compose.yml` 配置/挂载（`make shell-up` 会先 `make shell-gen`
+  重新生成两份 JSON 到 `.brickkit/shellgen/`）——不再是 Task 6 阶段手动
+  `docker run -v` 的临时状态，Task 8 已完成，见父仓库
+  `docs/plans/04-阶段四-做外壳验拆回.md` Task 8 与本仓库 README 的补充说明。
+  ⚠️ 健康检查命令是普通 `wget -q -O /dev/null`，不是 `--spider`——那个坑是
+  Python 侧才踩到的（FastAPI 的 `GET /` 不支持 HEAD），但两边的 Dockerfile/
+  compose 判据保持一致，不要为了"Go 这边其实没事"就改回 `--spider`。
 - 产出 7 的"跨外壳"环境变量改写分支**已经真机触发验证过**（`go-core`/
   `go-backoffice` 跨容器请求 `go-infra` 暴露的 `authzBundleUrl`/`iamJwksUrl`），
   不再是"大概率不会被触发"的推演状态——`docs/design/_调研记录/04-阶段四.md` §4/§12
