@@ -192,3 +192,56 @@ func TestRun_单模块Start里panic不崩溃整个进程只是优雅退出并清
 		t.Fatalf("期望错误信息里包含出问题的 componentID，实际 %q", got)
 	}
 }
+
+// TestExportDependencyEndpoints_真机复现 是阶段四 Task 9 真机验证跨组件
+// 调用（infra-iam-casdoor 换真实 JWT 时用 besdk.SystemClient 拨号
+// infra-authz）才撞到的真实 bug：besdk.Endpoint()（SystemClient/
+// UserClient 内部都靠它）读的是 os.LookupEnv，不是 rt.Config——
+// ModuleSpec.Env 只喂进了 rt.Config，从未真的 os.Setenv 过，合并态下
+// 任何调用 besdk.SystemClient/UserClient 的代码路径都会报"地址未注入"。
+func TestExportDependencyEndpoints_真机复现(t *testing.T) {
+	t.Cleanup(func() {
+		os.Unsetenv("INFRA_AUTHZ_ENDPOINT")
+		os.Unsetenv("INFRA_AUTHZ_GRPC_ENDPOINT")
+	})
+
+	modules := []ModuleSpec{
+		{
+			ComponentID: "infra/iam-casdoor",
+			Env: map[string]string{
+				"COMPONENT_ID":              "infra/iam-casdoor", // 非 _ENDPOINT 结尾，不该被导出
+				"INFRA_AUTHZ_ENDPOINT":      "http://127.0.0.1:8223",
+				"INFRA_AUTHZ_GRPC_ENDPOINT": "http://127.0.0.1:9223",
+			},
+		},
+	}
+
+	if err := exportDependencyEndpoints(modules); err != nil {
+		t.Fatalf("exportDependencyEndpoints 失败: %v", err)
+	}
+
+	if got := os.Getenv("INFRA_AUTHZ_ENDPOINT"); got != "http://127.0.0.1:8223" {
+		t.Fatalf("INFRA_AUTHZ_ENDPOINT 没有被真的 os.Setenv，实际 %q", got)
+	}
+	if got := os.Getenv("INFRA_AUTHZ_GRPC_ENDPOINT"); got != "http://127.0.0.1:9223" {
+		t.Fatalf("INFRA_AUTHZ_GRPC_ENDPOINT 没有被真的 os.Setenv，实际 %q", got)
+	}
+	if got, ok := os.LookupEnv("COMPONENT_ID"); ok && got == "infra/iam-casdoor" {
+		// 这个 key 本来就可能因为别的测试/环境存在，只在它确实等于本用例
+		// 写的值时才判定为"被误导出"，避免误报。
+		t.Fatal("非 _ENDPOINT 结尾的 key 不该被导出到进程环境")
+	}
+}
+
+func TestExportDependencyEndpoints_同一个外壳内不一致时报错(t *testing.T) {
+	t.Cleanup(func() { os.Unsetenv("INFRA_AUTHZ_ENDPOINT") })
+
+	modules := []ModuleSpec{
+		{ComponentID: "a", Env: map[string]string{"INFRA_AUTHZ_ENDPOINT": "http://127.0.0.1:8223"}},
+		{ComponentID: "b", Env: map[string]string{"INFRA_AUTHZ_ENDPOINT": "http://host.docker.internal:8223"}},
+	}
+
+	if err := exportDependencyEndpoints(modules); err == nil {
+		t.Fatal("期望报错（同一个外壳内两个模块看到的同一个依赖地址不一致），实际没有")
+	}
+}

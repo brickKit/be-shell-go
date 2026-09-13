@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -97,6 +98,46 @@ type builtModule struct {
 	mod  *besdk.Module
 }
 
+// exportDependencyEndpoints 把每个模块 Env 里以 "_ENDPOINT" 结尾的 key
+// 真的 os.Setenv 进外壳自己的进程环境。
+//
+// ⚠️ 阶段四 Task 9 真机验证跨组件调用（infra-iam-casdoor 换真实 JWT 时
+// 用 besdk.SystemClient 拨号 infra-authz）才撞到的真实 bug：
+// `besdk.Endpoint()`/`MustEndpoint()`（`SystemClient`/`UserClient` 内部
+// 都靠它）读的是 `os.LookupEnv`，**不是** `rt.Config`——这是平台自己的
+// 既有设计（依赖地址按依赖方身份命名，同一个进程里所有消费者看到的值
+// 本来就该一样，见 `endpoint.go` 的文档）。合并部署之前，这个变量由
+// brickKit 平台注入进每个独立容器**自己的** `os.Environ`；合并之后那些
+// 容器不存在了，"把它设进进程环境"这件事没有人再做——`ModuleSpec.Env`
+// 只喂进了 `rt.Config`（`NewShellRuntime` 的既有设计，供模块自己的
+// `configSchema` 项使用），从未真的 `os.Setenv` 过。不补上这一步，任何
+// 调用 `besdk.SystemClient`/`UserClient` 的代码路径在合并态下都会报
+// "地址未注入"，即使 `rt.Config` 里其实有这份数据——真机复现过。
+//
+// 同一个 key 在同一个外壳的不同模块 Env 里出现时，值理应完全一致：
+// 决定它的只有"我的外壳、对方的外壳"这对关系（produce 7 的改写逻辑），
+// 同一个外壳内任何模块问的都是同一个问题、同一个答案。这里不假设这条
+// 不变式必然成立，真的发现不一致就报错，不悄悄用后一个值覆盖前一个
+// ——那正是十七条第 17 条"最后一个 init 的赢"这一类问题的翻版。
+func exportDependencyEndpoints(modules []ModuleSpec) error {
+	seen := make(map[string]string)
+	for _, m := range modules {
+		for k, v := range m.Env {
+			if !strings.HasSuffix(k, "_ENDPOINT") {
+				continue
+			}
+			if existing, ok := seen[k]; ok && existing != v {
+				return fmt.Errorf("模块 %s 的 %s=%q 与已经看到的 %q 不一致（同一个外壳内不同模块看到的同一个依赖地址不该不一样，检查产出 7 的改写逻辑）", m.ComponentID, k, v, existing)
+			}
+			seen[k] = v
+			if err := os.Setenv(k, v); err != nil {
+				return fmt.Errorf("os.Setenv(%s) 失败: %w", k, err)
+			}
+		}
+	}
+	return nil
+}
+
 // Run 装配整个外壳：Bootstrap 一次 → 开一个共享 DB/NATS → 权限判定装配
 // 一次 → 逐个模块调 New 拿 *besdk.Module → 按 cfg.Modules 的顺序逐个跑
 // 迁移 → 用 errgroup 一起 Listen → 任一失败或 ctx 取消，全部优雅退出。
@@ -104,6 +145,10 @@ type builtModule struct {
 // 阻塞到 ctx 被取消或任一模块失败为止，返回值是 errgroup.Wait() 的结果
 // （nil 代表正常收到取消信号退出，不是"什么都没做"）。
 func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
+	if err := exportDependencyEndpoints(cfg.Modules); err != nil {
+		return fmt.Errorf("导出依赖地址到进程环境失败: %w", err)
+	}
+
 	shutdownOTel, err := besdk.Bootstrap(ctx, cfg.ShellName, cfg.OTelBaseURL)
 	if err != nil {
 		return fmt.Errorf("Bootstrap: %w", err)
