@@ -2,6 +2,10 @@ package shell
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,8 +23,10 @@ import (
 	erpinventory "github.com/brickKit/erp-inventory/backend/module"
 	erpsales "github.com/brickKit/erp-sales/backend/module"
 	infraauthz "github.com/brickKit/infra-authz/backend/module"
+	infraiamcasdoor "github.com/brickKit/infra-iam-casdoor/backend/module"
 	infranotification "github.com/brickKit/infra-notification/backend/module"
 	infraworkflow "github.com/brickKit/infra-workflow/backend/module"
+	integrationimdingtalk "github.com/brickKit/integration-im-dingtalk/backend/module"
 	mdmcustomer "github.com/brickKit/mdm-customer/backend/module"
 	customerv1 "github.com/brickKit/mdm-customer/gen/mdm/customer/v1"
 	mdmproduct "github.com/brickKit/mdm-product/backend/module"
@@ -110,9 +116,15 @@ func runRealShell(t *testing.T, shellName string, modules []realModule, routeChe
 	// RequirePermission 是 fail-closed stub，非 Public 路由一律 403，
 	// 不是 404（说明路由确实注册了）、也不是 500/连接失败（说明真实
 	// service/repo 层的构造、真实共享连接池的 SET LOCAL ROLE 切换都
-	// 没有在启动阶段就崩掉）。
+	// 没有在启动阶段就崩掉）。routeChecks 的 value 支持可选的方法前缀
+	// （如 "POST /api/iam/logout"），不带前缀默认 GET——infra-iam-casdoor
+	// 除了 Public 路由全是 POST，没有一条 GET 的非 Public 路由可选。
 	for id, path := range routeChecks {
-		assertStatusReal(t, ports[id], path, http.StatusForbidden)
+		method, p := http.MethodGet, path
+		if i := strings.IndexByte(path, ' '); i >= 0 {
+			method, p = path[:i], path[i+1:]
+		}
+		assertStatusReal(t, ports[id], method, p, http.StatusForbidden)
 	}
 
 	cancel()
@@ -185,28 +197,73 @@ func TestRun_go_backoffice外壳的真实模块能启动(t *testing.T) {
 	runRealShell(t, "be-shell-go-backoffice-test", modules, routeChecks)
 }
 
-// TestRun_go_infra外壳的三个真实模块能一起启动 验证 go-infra 外壳
-// （设计书 §13.2 外壳三）里配置最简单的三个成员——infra-authz/
-// infra-workflow/infra-notification（全部字段都有默认值，不需要任何
-// 额外 env）。**故意不含 infra-iam-casdoor/integration-im-dingtalk**：
-// 前者的 configSchema 有六七个"必填无默认值"的敏感配置项
-// （casdoorAdminPassword/webhookSharedSecret/appTokenSigningKeyPem…）
-// 且 Start() 会真的去调一个真实 Casdoor 实例的管理 API 做自举；后者
-// 需要真实钉钉凭据——这两个要么需要伪造一整套看起来合法的密钥/PEM
-// （伪造出来的值本身没有验证意义，只是让 MustString 不 panic），要么
-// 需要真的连一个可用的 Casdoor/钉钉沙盒，复杂度与本条测试想验证的
-// "外壳骨架能不能扛住真实组件"不是同一件事，留给单独一轮任务处理，
-// 不在阶段四这一遍里勉强凑数。
-func TestRun_go_infra外壳的三个真实模块能一起启动(t *testing.T) {
+// TestRun_go_infra外壳全部5个真实模块能一起启动 验证 go-infra 外壳
+// （设计书 §13.2 外壳三）全部 5 个成员：infra-authz/infra-workflow/
+// infra-notification（全部字段都有默认值）+ infra-iam-casdoor（真实连一个
+// 本机跑着的 be-casdoor 基础资源自举，`APP_TOKEN_SIGNING_KEY_PEM` 用测试
+// 现生成的真实 RSA 密钥）+ integration-im-dingtalk（真实钉钉凭据，见
+// `.env` 的 `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET`/`DINGTALK_AGENT_ID`
+// ——项目 Task 9 阶段三已经真机验证过这三项是真实可用的凭据，不是占位符）。
+//
+// ⚠️ 用真实凭据不等于会真的调一次钉钉/深度改 Casdoor 状态——已经确认过
+// 两件事，这条测试才敢这么设计：
+//  1. integration-im-dingtalk 的 New/Start 零网络调用，真正会打钉钉
+//     gettoken 接口的 tokenmgr.EnsureValid/Refresh 只在真的消费一条
+//     infra.notification.dispatch.im.v1 事件、或者管理员手动调
+//     POST /admin/token/refresh 时才触发——这条测试两者都不做，全程不会
+//     真的联系钉钉服务器。
+//  2. infra-iam-casdoor 的 Start() 对 Casdoor 不可达/自举失败的每一步都是
+//     记日志继续，不会把错误返回给 errgroup（不会拖垮整个外壳）；自举
+//     用的组织/应用名沿用 component.yaml 默认值 brickkit/brickkit-app，
+//     跟阶段三真机验证时创建的是同一个，本来就存在，自举只是确认存在
+//     不会重复创建，不会弄脏 Casdoor 状态；`webhookCallbackUrl` 留空
+//     跳过 webhook 自举这一步，不需要真实可达的回调地址。
+//
+// 需要真实运行的 be-casdoor（`make up` 默认起的基础资源之一）；用宿主机
+// 直连地址 http://localhost:8000，不是 host.docker.internal（那是给
+// brickkit 托管容器用的，这条测试是宿主机上的 go test 进程直连）。
+func TestRun_go_infra外壳全部5个真实模块能一起启动(t *testing.T) {
+	requireCasdoorReachable(t)
+	signingKeyPEM := generateTestRSAPrivateKeyPEM(t)
+
+	appKey := os.Getenv("DINGTALK_APP_KEY")
+	appSecret := os.Getenv("DINGTALK_APP_SECRET")
+	agentID := os.Getenv("DINGTALK_AGENT_ID")
+	if appKey == "" || appSecret == "" || agentID == "" {
+		t.Skip("未设置 DINGTALK_APP_KEY/DINGTALK_APP_SECRET/DINGTALK_AGENT_ID，跳过（见 .env）")
+	}
+
 	modules := []realModule{
-		{id: "infra/authz", version: "1.0.4", schema: "infra_authz", new: infraauthz.New},
+		{id: "infra/authz", version: "1.0.5", schema: "infra_authz", new: infraauthz.New},
 		{id: "infra/workflow", version: "1.0.3", schema: "infra_workflow", new: infraworkflow.New},
 		{id: "infra/notification", version: "1.0.3", schema: "infra_notification", new: infranotification.New},
+		{
+			id: "infra/iam-casdoor", version: "1.0.7", schema: "infra_iam_casdoor",
+			extra: map[string]string{
+				"CASDOOR_BASE_URL":          "http://localhost:8000",
+				"CASDOOR_ADMIN_USERNAME":    "admin",
+				"CASDOOR_ADMIN_PASSWORD":    "123",
+				"WEBHOOK_SHARED_SECRET":     "test-webhook-shared-secret-placeholder",
+				"APP_TOKEN_SIGNING_KEY_PEM": signingKeyPEM,
+			},
+			new: infraiamcasdoor.New,
+		},
+		{
+			id: "integration/im-dingtalk", version: "1.0.4", schema: "integration_im_dingtalk",
+			extra: map[string]string{
+				"DINGTALK_APP_KEY":    appKey,
+				"DINGTALK_APP_SECRET": appSecret,
+				"DINGTALK_AGENT_ID":   agentID,
+			},
+			new: integrationimdingtalk.New,
+		},
 	}
 	routeChecks := map[string]string{
-		"infra/authz":        "/api/admin/roles",
-		"infra/workflow":     "/infra/workflow/tasks",
-		"infra/notification": "/infra/notification/notifications",
+		"infra/authz":             "/api/admin/roles",
+		"infra/workflow":          "/infra/workflow/tasks",
+		"infra/notification":      "/infra/notification/notifications",
+		"infra/iam-casdoor":       "POST /api/iam/logout",
+		"integration/im-dingtalk": "/integration/im/admin/deliveries",
 	}
 	runRealShell(t, "be-shell-go-infra-test", modules, routeChecks)
 }
@@ -359,6 +416,37 @@ func assertBatchGetReachable(t *testing.T, dep string, port int, call func(conte
 	}
 }
 
+// requireCasdoorReachable 确认本机 be-casdoor（`make up` 默认起的基础
+// 资源）真的在跑——不可达就跳过，不是伪造一个"假装可达"的判断，同
+// realGoDSN/natsURLForTest 判断真实依赖是否就绪的既有方式一致。
+func requireCasdoorReachable(t *testing.T) {
+	t.Helper()
+	resp, err := http.Get("http://localhost:8000/api/health")
+	if err != nil {
+		t.Skipf("本机 be-casdoor 不可达（先 make up）：%v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("本机 be-casdoor 健康检查非 200（状态码 %d），先确认它已经完全起来", resp.StatusCode)
+	}
+}
+
+// generateTestRSAPrivateKeyPEM 现生成一把真实的 RSA 私钥，PKCS1 PEM 编码
+// ——infra-iam-casdoor 的 keys.ParsePrivateKeyPEM 先试 PKCS1 再退化试
+// PKCS8，两种都支持，这里选最简单的那种。这把钥匙只在这条测试的生命周期
+// 内存在，不落盘、不复用，纯粹是为了让 appTokenSigningKeyPem 这个必填项
+// 拿到一把语法/语义都合法的真实密钥，不是伪造一个看起来像密钥的字符串
+// 去"骗过" MustString。
+func generateTestRSAPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("生成测试用 RSA 密钥失败: %v", err)
+	}
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return string(pem.EncodeToMemory(block))
+}
+
 func waitHealthyOrFail(t *testing.T, errCh <-chan error, port int, path string) {
 	t.Helper()
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
@@ -381,15 +469,19 @@ func waitHealthyOrFail(t *testing.T, errCh <-chan error, port int, path string) 
 	t.Fatalf("端口 %d 的 %s 在 5 秒内没有开始正常响应", port, path)
 }
 
-func assertStatusReal(t *testing.T, port int, path string, want int) {
+func assertStatusReal(t *testing.T, port int, method, path string, want int) {
 	t.Helper()
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
-		t.Fatalf("请求 %s 失败：%v", url, err)
+		t.Fatalf("构造请求 %s %s 失败：%v", method, url, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s %s 失败：%v", method, url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != want {
-		t.Fatalf("请求 %s 期望状态码 %d，实际 %d", url, want, resp.StatusCode)
+		t.Fatalf("请求 %s %s 期望状态码 %d，实际 %d", method, url, want, resp.StatusCode)
 	}
 }
