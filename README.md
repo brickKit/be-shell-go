@@ -42,6 +42,18 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   不是从设计书推演出来的——`RunStandalone` 的等价调用不需要这层防护，单模块
   进程整个崩溃退出正是正确行为；11 个模块共享一个进程后，同一个疏漏会把另外
   10 个一起带走）。
+- `TestRun_跨外壳依赖真实网络可达`：go-core（`mdm-customer`/`mdm-product`）
+  与 go-backoffice（`crm-opportunity`）两个外壳真的**同时**跑起来（前面几条
+  测试都是先后顺序跑完一个再跑下一个，从没验证过"两个外壳同时存在、互不
+  干扰"这件事），用真身 gRPC 客户端桩代码直接拨号 go-core 的真实端口发起
+  一次 `BatchGet`，验证跨外壳地址真的可达、对方的 gRPC handler → service
+  层 → repo 层 → 共享连接池 `WithTx` 这一整条路径真的能跑通。⚠️ **没有**
+  通过 crm-opportunity 自己的 REST 层驱动这次调用——那需要真实
+  `iamJwksUrl`/`authzBundleUrl`（`infra-iam-casdoor`+`infra-authz`真实跑
+  起来），复杂度不是这条测试要验的东西，留给 Task 9；crm-opportunity 的
+  `backend/internal/client` 又是 Go 的 `internal` 包，本仓库物理上 import
+  不到。gRPC 侧本项目目前没有任何鉴权（鉴权只在 REST 层），所以直接拨号
+  验证网络可达性是自洽的，不构成绕过鉴权。
 
 ## 待办（阶段四后续任务）
 
@@ -51,10 +63,9 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   `Config.Modules`，真机 `brickkit up` 验证。
 - `infra-iam-casdoor`/`integration-im-dingtalk` 两个真实模块的合并验证——
   单独一轮任务，需要真实 Casdoor/钉钉沙盒或谨慎构造的伪造密钥。
-- 待写：`TestRun_跨外壳依赖真实网络可达`——验证 crm-opportunity（go-backoffice）
-  真的能通过 `host.docker.internal`（产出 7）跨外壳调到 mdm-customer/
-  mdm-product（go-core）。
-- Task 9：合并态业务闭环真机验证（附录 E 全链路）。
+- Task 9：合并态业务闭环真机验证（附录 E 全链路）——包括驱动一次真实
+  authenticated 的 `CreateOpportunity`，验证跨外壳依赖在**带真实权限判定**
+  的完整链路下也能正常工作，不只是网络层面可达。
 - Task 10：§13.7 拆回门禁 + 铁律六 import 扫描扩展到本仓库（本仓库自身语言层面
   不可能违反铁律六——它只能 import 各组件的公开 `backend/module` 包，Go 的
   `internal/` 可见性规则物理上不允许它碰到任何组件的内部实现；真正的风险点是

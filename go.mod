@@ -12,11 +12,14 @@ require (
 	github.com/brickKit/infra-notification v1.0.3
 	github.com/brickKit/infra-workflow v1.0.3
 	github.com/brickKit/mdm-customer v1.0.6
+	github.com/brickKit/mdm-customer/gen/mdm/customer v1.0.6
 	github.com/brickKit/mdm-product v1.0.7
+	github.com/brickKit/mdm-product/gen/mdm/product v1.0.7
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats.go v1.53.1
 	golang.org/x/sync v0.22.0
+	google.golang.org/grpc v1.83.2
 )
 
 require (
@@ -26,8 +29,6 @@ require (
 	github.com/brickKit/erp-finance/gen/erp/finance v1.0.10 // indirect
 	github.com/brickKit/erp-inventory/gen/erp/inventory v1.0.14 // indirect
 	github.com/brickKit/infra-workflow/gen/infra/workflow v1.0.3 // indirect
-	github.com/brickKit/mdm-customer/gen/mdm/customer v1.0.6 // indirect
-	github.com/brickKit/mdm-product/gen/mdm/product v1.0.7 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
@@ -87,7 +88,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

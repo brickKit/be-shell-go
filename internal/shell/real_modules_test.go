@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	besdk "github.com/brickKit/be-sdk-go"
 
 	crmopportunity "github.com/brickKit/crm-opportunity/backend/module"
@@ -19,7 +22,9 @@ import (
 	infranotification "github.com/brickKit/infra-notification/backend/module"
 	infraworkflow "github.com/brickKit/infra-workflow/backend/module"
 	mdmcustomer "github.com/brickKit/mdm-customer/backend/module"
+	customerv1 "github.com/brickKit/mdm-customer/gen/mdm/customer/v1"
 	mdmproduct "github.com/brickKit/mdm-product/backend/module"
+	productv1 "github.com/brickKit/mdm-product/gen/mdm/product/v1"
 )
 
 // realModule 是一次真机验证要装的一个真实组件——把 Task 5 两个模块时
@@ -204,6 +209,154 @@ func TestRun_go_infra外壳的三个真实模块能一起启动(t *testing.T) {
 		"infra/notification": "/infra/notification/notifications",
 	}
 	runRealShell(t, "be-shell-go-infra-test", modules, routeChecks)
+}
+
+// TestRun_跨外壳依赖真实网络可达 验证 go-backoffice 外壳（crm-opportunity）
+// 对 go-core 外壳（mdm-customer/mdm-product）的两条跨外壳强依赖，在两个
+// 外壳真的同时作为两个独立进程跑起来时，真实网络可达——不是"路由挂载
+// 对了"这种间接证据，是真的对着另一个进程里活着的 gRPC 服务发一次调用、
+// 拿到一个正确的响应。前三条测试从没有真的让两个外壳同时活着过（都是
+// 先后顺序跑完一个再跑下一个），这条测试补的正是这一半。
+//
+// ⚠️ 没有通过 crm-opportunity 自己的 REST 层去驱动这次调用（比如真的走
+// 一次 CreateOpportunity）——那需要一整套真实 iamJwksUrl/authzBundleUrl
+// （infra-iam-casdoor 真实签发 + infra-authz 真实下发权限），复杂度跟
+// 本条测试想验证的"跨外壳地址真实可达"不是同一件事，留给阶段四 Task 9
+// 的合并态业务闭环真机验证。crm-opportunity 自己的 backend/internal/client
+// 又是 Go 的 internal 包，本仓库物理上 import 不到（铁律六天然生效），
+// 所以这里改用它内部调用的同一套真身 gRPC 客户端桩代码
+// （mdm-customer/mdm-product 各自的 gen/.../v1 包，铁律六第二类白名单，
+// 见设计书 §13.3）直接发起调用——验证的是"produce-7 会算出来的这个跨
+// 外壳地址，在另一个真实运行的进程里确实有一个正常响应的 gRPC 服务"，
+// 这正是"跨外壳依赖真实网络可达"字面要验证的事，不依赖 crm-opportunity
+// 自己那一侧的鉴权状态（gRPC 侧本项目目前没有任何鉴权，鉴权只在 REST
+// 层，见各组件 AGENTS.md 的既有说明——跟本条测试想验证的东西是两回事）。
+func TestRun_跨外壳依赖真实网络可达(t *testing.T) {
+	pgDSN := realGoDSN(t)
+	natsURL := natsURLForTest()
+
+	customerHTTPPort, customerGRPCPort := freePort(t), freePort(t)
+	productHTTPPort, productGRPCPort := freePort(t), freePort(t)
+
+	coreCtx, coreCancel := context.WithCancel(context.Background())
+	coreErrCh := make(chan error, 1)
+	go func() {
+		coreErrCh <- Run(coreCtx, Config{
+			ShellName: "be-shell-go-core-crosscheck",
+			PGDSN:     pgDSN,
+			NATSURL:   natsURL,
+			Modules: []ModuleSpec{
+				{
+					ComponentID:      "mdm/customer",
+					ComponentVersion: "1.0.7",
+					Env:              map[string]string{"PG_SCHEMA": "mdm_customer"},
+					HTTPPort:         customerHTTPPort,
+					ExtraPorts:       map[string]int{"grpc": customerGRPCPort},
+					Schema:           "mdm_customer",
+					New:              mdmcustomer.New,
+				},
+				{
+					ComponentID:      "mdm/product",
+					ComponentVersion: "1.0.8",
+					Env:              map[string]string{"PG_SCHEMA": "mdm_product"},
+					HTTPPort:         productHTTPPort,
+					ExtraPorts:       map[string]int{"grpc": productGRPCPort},
+					Schema:           "mdm_product",
+					New:              mdmproduct.New,
+				},
+			},
+		}, besdk.NewLogger("be-shell-go-core-crosscheck"))
+	}()
+	t.Cleanup(func() {
+		coreCancel()
+		select {
+		case <-coreErrCh:
+		case <-time.After(5 * time.Second):
+			t.Error("go-core 外壳在 ctx 取消后没有及时退出")
+		}
+	})
+	waitHealthyOrFail(t, coreErrCh, customerHTTPPort, "/healthz")
+	waitHealthyOrFail(t, coreErrCh, productHTTPPort, "/healthz")
+
+	// 模拟 be-ops 产出 7 会给跨外壳依赖算出来的那种地址——真实 Docker 部署
+	// 时这里会是 host.docker.internal:<对方发布的端口>，本地测试里两个
+	// "外壳"是同一个测试进程里的两个 goroutine，用 127.0.0.1 才能真的连
+	// 上；验证的是同一件事："这个地址在另一个真实运行的进程里有一个正常
+	// 工作的 gRPC 服务"，跟具体是哪个主机名无关。besdk.Endpoint() 读的是
+	// 真实进程环境变量（§2.1 的既有设计：依赖地址不走 rt.Config，走
+	// os.Getenv——因为它的取值只取决于"被依赖组件是谁"，不取决于"哪个
+	// 模块在问"，多模块共享一个进程环境不会有 item 16 那类冲突），所以
+	// 这里用 t.Setenv 而不是 ModuleSpec.Env。
+	t.Setenv("MDM_CUSTOMER_ENDPOINT", fmt.Sprintf("http://127.0.0.1:%d", customerHTTPPort))
+	t.Setenv("MDM_CUSTOMER_GRPC_ENDPOINT", fmt.Sprintf("http://127.0.0.1:%d", customerGRPCPort))
+	t.Setenv("MDM_PRODUCT_ENDPOINT", fmt.Sprintf("http://127.0.0.1:%d", productHTTPPort))
+	t.Setenv("MDM_PRODUCT_GRPC_ENDPOINT", fmt.Sprintf("http://127.0.0.1:%d", productGRPCPort))
+
+	backofficePort := freePort(t)
+	boCtx, boCancel := context.WithCancel(context.Background())
+	boErrCh := make(chan error, 1)
+	go func() {
+		boErrCh <- Run(boCtx, Config{
+			ShellName: "be-shell-go-backoffice-crosscheck",
+			PGDSN:     pgDSN,
+			NATSURL:   natsURL,
+			Modules: []ModuleSpec{
+				{
+					ComponentID:      "crm/opportunity",
+					ComponentVersion: "1.0.10",
+					Env:              map[string]string{"PG_SCHEMA": "crm_opportunity"},
+					HTTPPort:         backofficePort,
+					Schema:           "crm_opportunity",
+					New:              crmopportunity.New,
+				},
+			},
+		}, besdk.NewLogger("be-shell-go-backoffice-crosscheck"))
+	}()
+	t.Cleanup(func() {
+		boCancel()
+		select {
+		case <-boErrCh:
+		case <-time.After(5 * time.Second):
+			t.Error("go-backoffice 外壳在 ctx 取消后没有及时退出")
+		}
+	})
+	waitHealthyOrFail(t, boErrCh, backofficePort, "/healthz")
+
+	// 到这里，两个外壳是真的同时活着的两个独立进程（这条测试里是两个
+	// 独立的 shell.Run 调用），互不干扰——这是前三条测试从未验证过的
+	// 状态。真正验证"跨外壳依赖真实网络可达"：用真身 gRPC 客户端桩代码
+	// 直接拨号 go-core 刚刚绑定的真实端口，发起一次真实调用。
+	assertBatchGetReachable(t, "mdm/customer", customerGRPCPort, func(ctx context.Context, cc *grpc.ClientConn) error {
+		_, err := customerv1.NewCustomerServiceClient(cc).BatchGet(ctx, &customerv1.BatchGetRequest{})
+		return err
+	})
+	assertBatchGetReachable(t, "mdm/product", productGRPCPort, func(ctx context.Context, cc *grpc.ClientConn) error {
+		_, err := productv1.NewProductServiceClient(cc).BatchGet(ctx, &productv1.BatchGetRequest{})
+		return err
+	})
+}
+
+// assertBatchGetReachable 拨号真实端口发起一次真实 BatchGet 调用——ids
+// 传空列表（besdk.BatchGetRouted 对空列表直接短路返回，不碰真实数据，
+// 见 be-sdk-go archive.go），验证的不是业务数据对不对（那是各组件自己
+// L2/L3 的范围），是"这个地址背后真的有一个正常工作的 gRPC 服务在响应"
+// 这件事本身：连接失败/超时/gRPC transport 错误说明网络不可达，正常
+// 返回（哪怕是空列表对应的空结果）说明可达，且请求真的走完了服务端的
+// gRPC handler → service 层 → repo 层 → 真实共享连接池 WithTx 这一整条
+// 路径。
+func assertBatchGetReachable(t *testing.T, dep string, port int, call func(context.Context, *grpc.ClientConn) error) {
+	t.Helper()
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	cc, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("拨号 %s（%s）失败: %v", dep, target, err)
+	}
+	defer cc.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := call(ctx, cc); err != nil {
+		t.Fatalf("跨外壳调用 %s（%s）的 BatchGet 失败，网络不可达或服务未正常响应: %v", dep, target, err)
+	}
 }
 
 func waitHealthyOrFail(t *testing.T, errCh <-chan error, port int, path string) {
