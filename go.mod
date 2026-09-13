@@ -4,10 +4,10 @@ go 1.25.11
 
 require (
 	github.com/brickKit/be-sdk-go v0.2.7
-	github.com/brickKit/crm-opportunity v1.0.9
+	github.com/brickKit/crm-opportunity v1.0.10
 	github.com/brickKit/erp-finance v1.0.10
 	github.com/brickKit/erp-inventory v1.0.14
-	github.com/brickKit/erp-sales v1.0.22
+	github.com/brickKit/erp-sales v1.0.23
 	github.com/brickKit/infra-authz v1.0.4
 	github.com/brickKit/infra-notification v1.0.3
 	github.com/brickKit/infra-workflow v1.0.3
