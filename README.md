@@ -8,7 +8,7 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
 **它不是 brickKit 组件**——不进 `brickkit.yaml`，不受签名覆盖，`brickKit` 平台对它
 "不挡路也不帮忙"（`组件合并部署.md` 的原话）。
 
-## 现状（阶段四 Task 5/6，11/11 个真实模块已验证）
+## 现状（阶段四 Task 5/6 全部完成，`brickkit.yaml` 已真机原子式切换）
 
 - `internal/shell`：全部装配逻辑（`Run`），复用 `be-sdk-go` 已验证过的
   `NewShellRuntime`/`InitShellAuthz`/`ServeHTTP`/`ServeExtraPort`，不重新实现。
@@ -22,9 +22,37 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   用测试现生成的真实 RSA 密钥；`integration-im-dingtalk` 用 `.env` 里真实的
   钉钉凭据（New/Start 全程零网络调用，不会真的联系钉钉服务器，见测试文件顶部
   注释）。
-- `cmd/shell`：进程入口，`Modules` 仍是空的——真机 `brickkit.yaml` 原子切换
-  是 Task 6 剩余部分，等 `be-ops` 产出 4/7（合并清单 + 每外壳环境变量表）
-  接进 `main.go` 才做，见待办。
+- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4（`shell-config.json`）/
+  产出 7（`shell-env.json`）——同一份镜像按 `SHELL_NAME` 环境变量的值
+  （`go-core`/`go-backoffice`/`go-infra`）从两份数据文件里挑出自己要装的
+  外壳，`moduleRegistry` 是本仓库唯一"componentId 字符串 → 真实 Go 源码
+  import"的静态映射（数据驱动配置，代码驱动装配，`ModuleSpec.New` 不能
+  从数据文件动态加载，见 `internal/shell.ModuleSpec` 的既有注释）。
+  `cmd/shell/main_test.go` 用手写夹具覆盖了"按外壳挑模块"/"外壳不存在时
+  报错"/"外壳还没原子式切换完时报错"/"11 个真实组件都在 moduleRegistry
+  里"四类断言，不需要真实基础设施。
+- **真机部署验证（阶段四 Task 6 最后一步，2026-09-13 完成）**：`docker build`
+  出的镜像，用同一份镜像分别起了 `shell-go-core`/`shell-go-backoffice`/
+  `shell-go-infra` 三个真实容器，`brickkit.yaml` 也真的原子式切换成
+  `local: true`——`brickkit up` 之后 `docker ps` 显示外壳态最终成品：
+  5 个基础资源 + 3 个外壳容器（合起来跑着全部 11 个真实模块）+
+  `infra-print`/`infra-bff-mobile`/`frontend-standard` 3 个仍独立的容器，
+  不再是 11 个独立的 Go 组件容器。真实验证过的内容：11 个模块的迁移全部
+  在各自真实 schema 里跑通；`infra-iam-casdoor` 真的连本机 `be-casdoor`
+  自举、真的收到 Casdoor 回调的 webhook（200）；`go-core`/`go-backoffice`
+  两个外壳跨容器请求 `go-infra` 暴露的 `authzBundleUrl`/`iamJwksUrl`
+  成功（同外壳/跨外壳两种地址改写规则都真机验证过）；3 个外壳容器合计
+  内存占用约 29MiB（`docker stats`），远低于 11 个独立容器的量级。
+  ⚠️ **过程中真的踩到两个新坑**（都已在 `be-ops` 修复，非本仓库范围但
+  记在这里方便理解为什么真机验证分了好几轮）：① `be-ops shell-env` 原来
+  要求全部 4 个外壳同时就绪才产出，与"Task 6 先切 3 个 Go 外壳、Task 7
+  才轮到 py-render"的分批节奏冲突，改成外壳级别静默跳过（`be-ops@v0.1.7`）；
+  ② brickKit 生成 `local-debug.*.env` 时，`appTokenSigningKeyPem` 这类
+  多行 PEM 值原样把换行符写进文件、不加引号也不转义，`be-ops` 原来的单行
+  dotenv 解析器会把 PEM 续行悄悄丢弃，且第一版修复又被"Base64 结尾的 `=`
+  补齐符"这个真实存在的边界情况击穿（真机拿到的 RSA 私钥被截断到倒数
+  第二行）——最终判据改成"`=` 前面那段像不像合法的 dotenv key"，不是
+  "这行有没有 `=`"（`be-ops@v0.1.7` 同一个 commit）。
 - ⚠️ **踩到的真实坑，复发了两次（阶段四调研记录 04 §13）**：erp-sales/
   crm-opportunity/infra-iam-casdoor 原本各自 vendor 了一份被依赖组件的契约
   生成代码（vendored-contract 模式）——一旦调用方和被调方的真实模块被编译
@@ -62,11 +90,19 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
 
 ## 待办（阶段四后续任务）
 
-- Task 6 剩余部分：`brickkit.yaml` 原子式真实切换——先 `brickkit down` 停掉
-  全部组装态容器（设计书 §13.9），`be-ops` 产出 4/7 接进 `cmd/shell/main.go`，
-  按拓扑序静态 `import` 11 个真实组件的 `backend/module` 包填进
-  `Config.Modules`，真机 `brickkit up` 验证。11/11 个真实模块的合并进程集成
-  测试已经全部通过，这一步的前置条件已经满足。
+⚠️ **当前真机跑着的 3 个外壳容器是手动 `docker run` 起的，不是 `shell-compose.yml`
+（那是 Task 8 的产出）**——没有健康检查探针、没有重启策略、没有跟
+`docker-compose.infra.yml`/`brickkit up` 接成一条启停链，`SHELL_CONFIG_JSON`/
+`SHELL_ENV_JSON` 也是手动挂载的宿主机文件，不是部署流程自动生成/分发的。
+这是刻意的：Task 6 只要求证明"原子式切换到 local: true 之后，真机能起
+3 个外壳容器、11 个模块都在里面正常跑"，编排层面的规范化是 Task 8 自己
+的范围，不要在这里提前把两件事混在一起判断"做完了"。
+
+- Task 7：`infra-print` 迁进 `be-shell-python`（Python 外壳，与本仓库无关）。
+- Task 8：三份 compose 编排（`docker-compose.infra.yml` + `brickkit up` 生成的
+  compose + `be-ops` 产出 8 的 `shell-compose.yml`）+ 启停脚本——把上面那 3 个
+  手动容器换成真正的 `shell-compose.yml`，接上健康检查、`be-net`、
+  `SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 的自动分发。
 - Task 9：合并态业务闭环真机验证（附录 E 全链路）——包括驱动一次真实
   authenticated 的 `CreateOpportunity`，验证跨外壳依赖在**带真实权限判定**
   的完整链路下也能正常工作，不只是网络层面可达。
