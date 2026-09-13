@@ -7,7 +7,7 @@
 | 仓库名 | `be-shell-go` |
 | 目录 | `shells/go/`（不进 `brickkit.yaml`，不是 brickKit 组件） |
 | 语言 / 框架 | Go；只依赖 `be-sdk-go`、`golang-migrate`（`iofs` 源驱动）、`golang.org/x/sync/errgroup` |
-| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——现状（Task 2 骨架）还没有真实装进任何一个，见 `README.md` 待办 |
+| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——9/11 个已在 `internal/shell/real_modules_test.go` 里真机验证过合并进程，`infra-iam-casdoor`/`integration-im-dingtalk` 留给单独一轮任务；`cmd/shell/main.go` 的 `Config.Modules` 仍是空的，真机 `brickkit.yaml` 切换是 Task 6 剩余部分，见 `README.md` 待办 |
 | 设计真相源 | 《BrickEnterprise 设计书.md》第 13 章（为什么、七条铁律、代价）+ `docs/plans/04-阶段四-做外壳验拆回.md`（本仓库具体要做什么）+ `docs/design/_调研记录/04-阶段四.md`（技术判断的推演过程）——本文件与它们冲突时，以那三份为准 |
 
 ## 这个仓库存在的唯一理由

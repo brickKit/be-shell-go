@@ -4,8 +4,15 @@ go 1.25.11
 
 require (
 	github.com/brickKit/be-sdk-go v0.2.7
-	github.com/brickKit/mdm-customer v1.0.5
-	github.com/brickKit/mdm-product v1.0.6
+	github.com/brickKit/crm-opportunity v1.0.9
+	github.com/brickKit/erp-finance v1.0.10
+	github.com/brickKit/erp-inventory v1.0.14
+	github.com/brickKit/erp-sales v1.0.22
+	github.com/brickKit/infra-authz v1.0.4
+	github.com/brickKit/infra-notification v1.0.3
+	github.com/brickKit/infra-workflow v1.0.3
+	github.com/brickKit/mdm-customer v1.0.6
+	github.com/brickKit/mdm-product v1.0.7
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats.go v1.53.1
@@ -16,6 +23,11 @@ require (
 	github.com/MicahParks/jwkset v0.11.3 // indirect
 	github.com/MicahParks/keyfunc/v3 v3.8.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/brickKit/erp-finance/gen/erp/finance v1.0.10 // indirect
+	github.com/brickKit/erp-inventory/gen/erp/inventory v1.0.14 // indirect
+	github.com/brickKit/infra-workflow/gen/infra/workflow v1.0.3 // indirect
+	github.com/brickKit/mdm-customer/gen/mdm/customer v1.0.6 // indirect
+	github.com/brickKit/mdm-product/gen/mdm/product v1.0.7 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
@@ -78,4 +90,32 @@ require (
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+// erp-finance/erp-inventory/infra-workflow/mdm-customer/mdm-product 各自把
+// 自己的 gen/<domain>/<name> 契约包发布成独立嵌套 go module（铁律六第二类
+// 白名单，设计书 §13.3；module 边界切在 v1 目录上一级，因为 Go 模块路径
+// 禁止以字面量 /v1 结尾）——erp-sales（本仓库唯一真正跨组件调用的组件）
+// 已经从"vendor 一份逐字复制的镜像"改成直接 import 这五个真身包（含
+// infra-workflow——它虽然被分进了不同外壳 go-infra，生产环境不会真的
+// 同进程，但本仓库自己的测试文件把 5 个外壳的真实模块测试放进同一个 Go
+// 测试二进制，编译阶段依然会一起链进去），不再各自维护一份重复的生成
+// 代码，从根源消除了外壳合并部署时 protobuf 全局注册表重复注册同一个
+// 文件/类型全名而 panic 的问题（阶段四调研记录 04 §13：先试过嵌套 module
+// + replace 去重，真机验证证明技术上不可行——Go 的 module system 无法把
+// 两个不同 import path 的包合并成一份编译实例，即使 replace 也不行）。
+//
+// 下面这五条"自己指回自己固定版本"的 replace 依然是必需的：这五个组件
+// 各自的 go.mod 里，那份嵌套 module 的 require 版本号都是占位的 v0.0.0
+// （配一条只在各自仓库自己构建时生效的本地相对路径 replace）——本仓库
+// 作为下游消费者看不到那条本地 replace，解析这五个组件各自的依赖图时会
+// 在 v0.0.0 这个不存在的版本号上直接报错（"unknown revision"）。每个
+// 下游消费者都必须自己把这个占位版本钉到一个真实发布过的版本，这是 Go
+// 多 module 单仓库这种结构的标准写法，不是本仓库独有的怪癖。
+replace (
+	github.com/brickKit/erp-finance/gen/erp/finance => github.com/brickKit/erp-finance/gen/erp/finance v1.0.10
+	github.com/brickKit/erp-inventory/gen/erp/inventory => github.com/brickKit/erp-inventory/gen/erp/inventory v1.0.14
+	github.com/brickKit/infra-workflow/gen/infra/workflow => github.com/brickKit/infra-workflow/gen/infra/workflow v1.0.3
+	github.com/brickKit/mdm-customer/gen/mdm/customer => github.com/brickKit/mdm-customer/gen/mdm/customer v1.0.6
+	github.com/brickKit/mdm-product/gen/mdm/product => github.com/brickKit/mdm-product/gen/mdm/product v1.0.7
 )
