@@ -393,6 +393,96 @@ func TestRun_跨外壳依赖真实网络可达(t *testing.T) {
 	})
 }
 
+// TestRun_一个模块panic不影响其它真实模块继续服务 是阶段四 Task 11 的核心
+// 验证："单个模块 panic 不拖垮外壳其余模块"这条要求，Task 2 的假模块测试
+// （shell_test.go 的 TestRun_单模块Start里panic不崩溃整个进程只隔离在这一个
+// 模块自己身上）只验证过骨架层面——那条测试里从来没有在同一个 Run 里同时
+// 跑着别的、真的健康的模块，"其余模块没被拖累"这句话在只有 1 个模块的
+// 场景下是验证不出来的。这里把 mdm-customer/mdm-product 两个真实、零依赖
+// 的组件模块，跟一个故意在 Start 里 panic 的假模块混进同一次 shell.Run，
+// 断言 panic 发生之后两个真实模块依然正常处理请求。
+//
+// ⚠️ 真实红过一次：写这条测试时 shell.go 的 Start goroutine 还是把 recover
+// 到的 panic 转成 error 原样 return 给 errgroup——errgroup.WithContext 的
+// gctx 被取消，两个真实模块的 /healthz 和业务路由全部跟着停止响应，这条
+// 测试当场 FAIL，证明"骨架层面验证过"跟"混进真实模块之后仍然成立"是两回
+// 事。修复（Start 的 panic 分支不再把 error 流回 g，只记日志，见 shell.go
+// 对应位置的注释）之后重跑转绿。
+func TestRun_一个模块panic不影响其它真实模块继续服务(t *testing.T) {
+	pgDSN := realGoDSN(t)
+	natsURL := natsURLForTest()
+
+	customerPort, productPort, panicPort := freePort(t), freePort(t), freePort(t)
+	panicking := make(chan struct{})
+
+	specs := []ModuleSpec{
+		{
+			ComponentID: "mdm/customer", ComponentVersion: "1.0.7",
+			Env: map[string]string{"PG_SCHEMA": "mdm_customer"}, HTTPPort: customerPort,
+			Schema: "mdm_customer", New: mdmcustomer.New,
+		},
+		{
+			ComponentID: "mdm/product", ComponentVersion: "1.0.8",
+			Env: map[string]string{"PG_SCHEMA": "mdm_product"}, HTTPPort: productPort,
+			Schema: "mdm_product", New: mdmproduct.New,
+		},
+		{
+			ComponentID: "fake/panics-alongside-real-modules",
+			HTTPPort:    panicPort,
+			Schema:      "fake_panics_alongside",
+			New: func(context.Context, *besdk.Runtime) (*besdk.Module, error) {
+				return &besdk.Module{
+					HTTPHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.WriteHeader(http.StatusOK)
+					}),
+					Start: func(context.Context) error {
+						close(panicking)
+						panic("模拟这个模块自己代码里的一个真实 bug，旁边跑着两个真实、健康的模块")
+					},
+				}, nil
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, Config{
+			ShellName: "be-shell-go-core-panic-isolation-test",
+			PGDSN:     pgDSN,
+			NATSURL:   natsURL,
+			Modules:   specs,
+		}, besdk.NewLogger("be-shell-go-core-panic-isolation-test"))
+	}()
+
+	waitHealthyOrFail(t, errCh, customerPort, "/healthz")
+	waitHealthyOrFail(t, errCh, productPort, "/healthz")
+	waitHealthyOrFail(t, errCh, panicPort, "/healthz")
+
+	select {
+	case <-panicking:
+	case <-time.After(2 * time.Second):
+		t.Fatal("假模块的 Start 在 2 秒内没有触发预期的 panic")
+	}
+	// panic 已经发生，给 recover/日志一点真实时间落地，再确认两个真实、
+	// 健康的模块没有被这次 panic 影响——不是被拖下线之后又恢复，是压根
+	// 没受影响。
+	time.Sleep(200 * time.Millisecond)
+
+	assertStatusReal(t, customerPort, http.MethodGet, "/mdm/customer/customers", http.StatusForbidden)
+	assertStatusReal(t, productPort, http.MethodGet, "/mdm/product/products", http.StatusForbidden)
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("期望优雅关闭无错误，实际 %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run 在 ctx 取消后没有及时退出")
+	}
+}
+
 // assertBatchGetReachable 拨号真实端口发起一次真实 BatchGet 调用——ids
 // 传空列表（besdk.BatchGetRouted 对空列表直接短路返回，不碰真实数据，
 // 见 be-sdk-go archive.go），验证的不是业务数据对不对（那是各组件自己

@@ -127,13 +127,54 @@ Task 6 验证阶段那 3 个手动 `docker run` 起的容器，已经换成真�
 `docker ps` 零残留。完整细节见父仓库 `docs/plans/04-阶段四-做外壳验拆回.md`
 Task 8。
 
-## 待办（阶段四后续任务）
+## 现状补充（阶段四 Task 11 完成，2026-09-13）——单个模块 panic 不再拖垮整个外壳
 
-- Task 10：§13.7 拆回门禁 + 铁律六 import 扫描扩展到本仓库（本仓库自身语言层面
-  不可能违反铁律六——它只能 import 各组件的公开 `backend/module` 包，Go 的
-  `internal/` 可见性规则物理上不允许它碰到任何组件的内部实现；真正的风险点是
-  组件之间互相 `import`，那条边完全不会出现在本仓库自己的依赖图里，根
-  `make gates` 的扫描器才是这条铁律的守卫）。
+`internal/shell/shell_test.go` 第 163-194 行原来的既有测试
+（Task 2 写的，只用假模块、只有 1 个模块）只验证过"`Run` 不会被一次 panic
+崩掉整个测试进程，能干净返回一个包含 componentID 的错误"——从没验证过
+"返回一个错误"这个结果本身对不对。混进真实模块之后才发现问题：
+`shell.go` 里 `Start()` 的 panic 分支把 recover 到的内容转成 error 原样
+`return` 给 errgroup，而 `errgroup.WithContext` 的既有语义是"任一
+goroutine 返回非 nil error，立刻取消整个组共用的 `gctx`"——`gctx` 正是
+全部模块的 HTTP/额外端口/`Start` 共用的同一个 ctx，取消它会把其它健康的
+模块也一起带下线。这与"单个模块 panic 不该拖垮外壳其余模块"直接矛盾。
+
+**真机复现**：新增 `internal/shell/real_modules_test.go` 的
+`TestRun_一个模块panic不影响其它真实模块继续服务`——把 `mdm/customer`/
+`mdm/product` 两个真实、零依赖组件模块，跟一个故意在 `Start()` 里 panic
+的假模块混进同一次 `shell.Run`。改 `shell.go` 之前这条测试是真的红的：
+panic 发生后两个真实模块的 `/healthz` 全部跟着停止响应。
+
+**修复**：`Start()` 这条 goroutine 的 panic 分支 recover 之后只记日志，
+不再把 error 流回 `g`（普通、非 panic 的 `Start()` 返回错误不受影响，
+仍然按原样拖垮整个外壳——两者是不同性质的失败：panic 是这一个模块自己
+代码里的 bug，其它模块的代码没有任何理由被牵连；`Start` 主动返回错误
+通常意味着它依赖的外部资源整个不可用，其它模块大概率也在用同一份资源，
+让外壳整体退出交给 Docker 重启仍是更安全的默认值）。代价：这个模块自己
+的 `Start` 循环从此不会再被重启，直到整个外壳下一次重启——这是有意接受
+的降级，日志会带上 `component_id` 清楚指出是谁。
+
+`shell_test.go` 的原有测试相应更名为
+`TestRun_单模块Start里panic不崩溃整个进程只隔离在这一个模块自己身上`，
+判据从"断言 `Run` 返回错误"改成"断言 panic 发生之后这个模块自己的 HTTP
+还在正常响应、`Run` 一直阻塞到 ctx 被取消才干净返回 `nil`"——这才是新
+行为下真正想要的结果。
+
+配套的"共享连接池下 `SET LOCAL` 越权测试"（漏加 schema 限定仍只读到自己
+schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只需要
+`be-sdk-go` + 真实 `TEST_PG_DSN`，不需要 import 任何组件仓库）。两条合起来
+是父仓库 `make tier2` 的完整内容，完整细节见父仓库
+`docs/plans/04-阶段四-做外壳验拆回.md` Task 11 与
+`tools/be-acceptance/platform/README.md` 新增的"tier2"一节（用例 24/25）。
+
+## 现状补充（阶段四 Task 10 完成）
+
+§13.7 拆回门禁与铁律六 import 扫描的扩展全部落在父仓库
+`tools/be-acceptance`/根 `brickkit.yaml`/`infra/scripts/weekly-teardown-gate.sh`
+——本仓库自身语言层面不可能违反铁律六（它只能 import 各组件的公开
+`backend/module` 包，Go 的 `internal/` 可见性规则物理上不允许它碰到任何
+组件的内部实现），所以这条任务没有在本仓库留下任何代码改动，完整细节见
+父仓库 `docs/plans/04-阶段四-做外壳验拆回.md` Task 10。
 
 完整任务清单见 `docs/plans/04-阶段四-做外壳验拆回.md`；本地开发时可以自己建一份
 `go.work`（`use ( . ../../tools/be-sdk-go )`）联调 `be-sdk-go` 未发布的改动，

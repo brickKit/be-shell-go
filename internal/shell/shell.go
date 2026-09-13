@@ -232,21 +232,40 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		}
 		if b.mod.Start != nil {
 			g.Go(func() (err error) {
-				// ⚠️ RunStandalone 的等价调用（standalone.go）不需要这层
-				// recover：单模块进程里，Start() 里一次未捕获的 panic 让
-				// 整个进程退出正是正确行为（Docker 重启策略负责，爆炸
-				// 半径=1 个组件）。外壳把 11 个模块塞进同一个进程后，
-				// 同样一次 panic 会把另外 10 个模块一起带走——这正是
-				// HTTP 侧 recoveryAndErrorMappingMiddleware、gRPC 侧
-				// grpcRecoveryInterceptor 已经在各自路径上守住的同一类
-				// 风险，只是 Start() 这条后台循环路径此前完全没有对应的
-				// 防线（写这段测试时才发现这个缺口，不是从设计书推演出
-				// 来的）。同 gRPC 侧的既有判据：不把 recover() 到的原始
-				// 内容包含调用栈细节透出到日志以外的任何地方。
+				// ⚠️ 阶段四 Task 11 真机复现过的一处真实缺口：这里如果把
+				// recover 到的 panic 转成的 error 原样 return 给 errgroup，
+				// errgroup.WithContext 的既有语义会立刻取消 gctx——而 gctx
+				// 正是本函数里全部模块的 HTTP/额外端口/Start 共用的同一个
+				// ctx，取消它等于把其余 10 个健康模块的服务也一起带下线。
+				// RunStandalone 的等价调用（standalone.go）不需要考虑这个：
+				// 单模块进程里，一次 panic 让整个进程退出就是正确行为
+				// （Docker 重启策略负责，爆炸半径=1 个组件）；外壳把 N 个
+				// 模块塞进同一个进程后，"1 个模块的后台循环 panic 了"不该
+				// 等价于"这 N 个模块一起坏了"——那样合并部署就白白放弃了
+				// 独立部署本来就有的故障隔离，merged 之后反而比 unmerged
+				// 更脆弱。所以 panic 这条分支 recover 之后只记日志、不
+				// 把 error 流回 g（同 HTTP 侧
+				// recoveryAndErrorMappingMiddleware、gRPC 侧
+				// grpcRecoveryInterceptor 已经在各自路径上守住的"一个
+				// 请求 panic 不该拖累其它请求"同一类判据，只是这里的隔离
+				// 单位是"一个模块"而不是"一次请求"）。代价：这个模块自己的
+				// Start 循环从此不会再被重启，直到整个外壳下一次重启——
+				// 这是有意接受的降级，不是被忽略的错误，日志会带上
+				// component_id 清楚指出是谁。
+				//
+				// ⚠️ 这条隔离只针对 panic——Start 自己正常 return 的非
+				// panic error 不受影响，仍然按原样流回 g、取消 gctx、
+				// 拖垮整个外壳。两者是不同性质的失败：panic 是这一个
+				// 模块自己代码里的 bug（同一个进程的另外 N-1 个模块的
+				// 代码没有任何理由被牵连）；Start 主动返回错误通常意味着
+				// 它依赖的外部资源坏了（比如共享的 DB/NATS 连接整个不可用
+				// ——这种情况下其它模块大概率也在用同一份资源，让外壳整体
+				// 退出交给 Docker 重启，仍然是目前认为更安全的默认值，
+				// Task 11 没有要求改变这一半）。
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Error("模块后台循环 panic", "module_component_id", b.spec.ComponentID, "recovered", r)
-						err = fmt.Errorf("模块 %s 的 Start 发生 panic: %v", b.spec.ComponentID, r)
+						logger.Error("模块后台循环 panic（已隔离，不影响外壳内其余模块）", "module_component_id", b.spec.ComponentID, "recovered", r)
+						err = nil
 					}
 				}()
 				err = b.mod.Start(gctx)

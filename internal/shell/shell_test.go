@@ -1,18 +1,58 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	besdk "github.com/brickKit/be-sdk-go"
 	"github.com/nats-io/nats.go"
 )
+
+// syncLogBuf 是一个并发安全、且能在写入内容命中某个标记时对外发出信号的
+// 日志缓冲区——recover 之后的那条日志写入发生在 Run 内部的另一个
+// goroutine，跟测试的主 goroutine 之间如果只靠 sleep 去猜时序，-race 会
+// 如实报出这是一次真正的数据竞争（写 buffer 的 goroutine 和读
+// buffer.String() 的主 goroutine 之间没有任何 happens-before 关系）。
+// close(logged) 建立的才是真正的同步点，不是"多等一会儿大概率来得及"。
+// ⚠️ 不能在"第一次 Write"就 close(logged)——InitShellAuthz 在 panic 发生
+// 之前就已经往同一个 logger 写过日志，第一次 Write 根本不是我们要等的
+// 那一条，得按内容匹配。
+type syncLogBuf struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	once    sync.Once
+	marker  string
+	matched chan struct{}
+}
+
+func newSyncLogBuf(marker string) *syncLogBuf {
+	return &syncLogBuf{marker: marker, matched: make(chan struct{})}
+}
+
+func (s *syncLogBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	n, err := s.buf.Write(p)
+	s.mu.Unlock()
+	if strings.Contains(string(p), s.marker) {
+		s.once.Do(func() { close(s.matched) })
+	}
+	return n, err
+}
+
+func (s *syncLogBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // natsURLForTest 同 be-sdk-go 的既有约定（outbox_test.go）：优先读
 // TEST_NATS_URL，本地开发环境没设就退化到 nats.DefaultURL——本项目的
@@ -160,36 +200,86 @@ func TestRun_HealthPort独立于任何模块自己响应(t *testing.T) {
 	}
 }
 
-// TestRun_单模块Start里panic不崩溃整个进程只是优雅退出并清楚指出是哪个模块
+// TestRun_单模块Start里panic不崩溃整个进程只隔离在这一个模块自己身上
 // 是"空转验证"的第二条，也是写这份骨架过程中真正发现的一处缺口
 // （RunStandalone 的等价调用没有这层 recover，单模块场景下不需要；
 // 外壳把 N 个模块塞进一个进程后，同一个未捕获 panic 会把其余模块一起
 // 带崩，Go 的 panic 会直接终止整个进程，不会被 errgroup 或其他 goroutine
-// 拦住）——这里验证 Run 加的 recover 确实生效：Run 干净返回一个包含
-// componentID 的错误，测试进程本身没有崩溃（如果没有 recover，这条测试
-// 会直接让整个 go test 进程崩溃退出，而不是"测试失败"）。
-func TestRun_单模块Start里panic不崩溃整个进程只是优雅退出并清楚指出是哪个模块(t *testing.T) {
+// 拦住）。
+//
+// ⚠️ 阶段四 Task 11 把这条测试的判据往前推了一步：这条测试早先的版本
+// 只验证了"Run 不会被一次 panic 崩掉整个测试进程，干净返回一个包含
+// componentID 的错误"——这句话本身没错，但从没验证过"返回一个错误"这个
+// 结果是不是我们真正想要的行为。用真实模块混跑（见
+// real_modules_test.go 的 TestRun_一个模块panic不影响其它真实模块继续服务）
+// 才发现：Run 把这个 error 原样返回给 errgroup 会取消 gctx，把外壳里
+// 其它所有健康模块一起拖下线——这与"单个模块 panic 不拖垮外壳其余模块"
+// 直接矛盾（shell.go 对应位置的注释记录了完整的修复过程）。修复后 Run
+// 不再把 panic 转成的错误返回给 errgroup，只记日志；本测试相应地把判据
+// 从"断言 Run 返回错误"改成"断言 panic 发生之后这个模块自己的 HTTP 还在
+// 正常响应、Run 一直阻塞到 ctx 被取消才干净返回 nil"，用一个日志缓冲区
+// 确认 componentID 确实被记下来了，替代原来靠错误信息字符串做的同一件事。
+func TestRun_单模块Start里panic不崩溃整个进程只隔离在这一个模块自己身上(t *testing.T) {
 	port := freePort(t)
+	panicked := make(chan struct{})
 	m := &fakeModule{
 		startFn: func(ctx context.Context) error {
+			close(panicked)
 			panic("模拟模块自己代码里的一个真实 bug")
 		},
 	}
 
-	err := Run(context.Background(), Config{
-		ShellName: "be-shell-go-test",
-		PGDSN:     "postgres://user:pass@localhost:1/doesnotmatter?sslmode=disable",
-		NATSURL:   natsURLForTest(),
-		Modules: []ModuleSpec{
-			{ComponentID: "fake/panics", Schema: "fake_panics", HTTPPort: port, New: m.new},
-		},
-	}, besdk.NewLogger("be-shell-go-test"))
+	// recover 之后的日志写入发生在 Run 内部另一个 goroutine 里，跟本测试
+	// 的主 goroutine 没有天然的先后关系——单靠 close(panicked) + sleep
+	// 只是"大概率来得及"，-race 会如实报出这是一次真正的数据竞争。
+	// syncLogBuf 用一次 Write 触发 close(logged) 建立真正的 happens-before
+	// 边，而不是靠时间凑巧。
+	logBuf := newSyncLogBuf("recovered")
+	logger := slog.New(slog.NewTextHandler(logBuf, nil))
 
-	if err == nil {
-		t.Fatal("期望 Run 返回错误（panic 被 recover 转成了 error），实际 nil")
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, Config{
+			ShellName: "be-shell-go-test",
+			PGDSN:     "postgres://user:pass@localhost:1/doesnotmatter?sslmode=disable",
+			NATSURL:   natsURLForTest(),
+			Modules: []ModuleSpec{
+				{ComponentID: "fake/panics", Schema: "fake_panics", HTTPPort: port, New: m.new},
+			},
+		}, logger)
+	}()
+
+	waitHealthy(t, port)
+
+	select {
+	case <-panicked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("模块的 Start 在 2 秒内没有触发预期的 panic")
 	}
-	if got := err.Error(); !strings.Contains(got, "fake/panics") {
-		t.Fatalf("期望错误信息里包含出问题的 componentID，实际 %q", got)
+
+	select {
+	case <-logBuf.matched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panic 发生后 2 秒内没有等到 recover 那条日志落地")
+	}
+
+	// 日志已经确认落地，此时再确认这个模块自己的 HTTP 服务没有被这次
+	// panic 带下线——隔离生效的直接证据。
+	waitHealthy(t, port)
+
+	if !strings.Contains(logBuf.String(), "fake/panics") {
+		t.Fatalf("期望日志里记录出问题的 componentID，实际日志：%s", logBuf.String())
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("期望优雅关闭无错误，实际 %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run 在 ctx 取消后没有及时退出")
 	}
 }
 
