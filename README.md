@@ -88,6 +88,30 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   不到。gRPC 侧本项目目前没有任何鉴权（鉴权只在 REST 层），所以直接拨号
   验证网络可达性是自洽的，不构成绕过鉴权。
 
+## 现状补充（阶段四 Task 9 完成，2026-09-13）——真机撞到一个此前未知的重要 bug
+
+`internal/shell.Run` 新增 `exportDependencyEndpoints`：把每个模块 `Env` 里 `_ENDPOINT` 结尾的 key
+真的 `os.Setenv` 进外壳进程环境，不再只喂进 `rt.Config`。
+
+**根因**：`besdk.Endpoint()`（`SystemClient`/`UserClient` 内部都靠它）读的是 `os.LookupEnv`，不是
+`rt.Config`——这是平台自己的既有设计（依赖地址按依赖方身份命名，同一个进程里所有消费者看到的值本来就
+该一样）。合并部署之前这个变量由 brickKit 平台注入进每个独立容器**自己的** `os.Environ`；合并之后那些
+容器不存在了，"把它设进进程环境"这件事从来没有人做过——不补上这一步，任何调用
+`besdk.SystemClient`/`UserClient` 的代码路径在合并态下都会报"地址未注入"，即使 `rt.Config` 里其实有
+这份数据。**Task 6/7/8 都没有撞到**，因为它们的验证范围止于健康检查/路由 fail-closed 状态码，从没有
+真的走到一条会调用 `besdk.SystemClient`/`UserClient` 的代码路径——真机驱动一次真实认证的
+`infra-iam-casdoor` 换 JWT（内部会拨号 `infra-authz`）才第一次暴露。
+
+同一个 key 在同一个外壳的不同模块 `Env` 里理应完全一致（决定它的只有"我的外壳、对方的外壳"这对关系），
+`exportDependencyEndpoints` 真的发现不一致就报错，不悄悄用后一个值覆盖前一个。
+
+**真机验证（阶段四 Task 9，附录 E 全链路）**：修复后真实驱动一次 CRM 赢单（真实 REST + 真实 Casdoor
+JWT）→ `erp-sales` 真实建单确认（自己的定价引擎重算单价）→ `erp-inventory` 真实锁库存 →
+`erp-finance` 真实生成 AR 凭证，金额与订单完全对上；Saga 补偿路径（信用超限）验证订单停留
+`DRAFT`、真实建出 `infra-workflow` 异常待办、`infra-notification` 正确路由；最后用真实订单数据调
+`infra-print` 渲染出送货单 PDF。全程跨 `go-backoffice`/`go-core`/`py-render` 三个外壳。完整细节见父
+仓库 `docs/plans/04-阶段四-做外壳验拆回.md` Task 9。
+
 ## 现状补充（阶段四 Task 8 完成，2026-09-13）
 
 Task 6 验证阶段那 3 个手动 `docker run` 起的容器，已经换成真正的
@@ -105,9 +129,6 @@ Task 8。
 
 ## 待办（阶段四后续任务）
 
-- Task 9：合并态业务闭环真机验证（附录 E 全链路）——包括驱动一次真实
-  authenticated 的 `CreateOpportunity`，验证跨外壳依赖在**带真实权限判定**
-  的完整链路下也能正常工作，不只是网络层面可达。
 - Task 10：§13.7 拆回门禁 + 铁律六 import 扫描扩展到本仓库（本仓库自身语言层面
   不可能违反铁律六——它只能 import 各组件的公开 `backend/module` 包，Go 的
   `internal/` 可见性规则物理上不允许它碰到任何组件的内部实现；真正的风险点是
