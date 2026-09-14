@@ -9,10 +9,12 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.4.6                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.4.7                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
-                                      # 不需要额外的对齐工作
+                                      # 不需要额外的对齐工作。v0.4.7：SHELL_CONFIG_JSON
+                                      # 从文件路径改成内容本身，新增 shellConfigJson
+                                      # 这个 configSchema 项，见下面注释
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -31,9 +33,20 @@ dependencies:
 configSchema:
   type: object
   properties:
-    shellName:                        # → SHELL_NAME，cmd/shell/main.go 用它从
-                                       # shell-config.json 里挑出自己要装的那个外壳；
-                                       # 三个 Go 外壳实例共用同一份镜像，靠这一项区分身份
+    shellName:                        # → SHELL_NAME，cmd/shell/main.go 用它拼
+                                       # shell.Config.ShellName/写日志；三个 Go 外壳
+                                       # 实例共用同一份镜像，靠这一项区分身份
+      type: string
+    shellConfigJson:                  # → SHELL_CONFIG_JSON，值是这个外壳自己的
+                                       # modules 数组（compact JSON）——命令：
+                                       #   be-ops shell-config --root . --shell go-core
+                                       # 源头数据（谁属于这个外壳、端口/schema/config）
+                                       # 变了就重新跑一次，把打印出来的字符串整个替换
+                                       # 掉这一项的值。没有默认值：servedBy 外壳没有
+                                       # volumes 可以挂载文件（brickKit 的 manifest
+                                       # 模型没有这个字段），只能把内容本身当一个普通
+                                       # 字符串配置值，跟 infra/authz 的 permissionCatalog
+                                       # 是同一种模式（阶段四附加 Task 0.4）
       type: string
     shellHealthPort:                  # → SHELL_HEALTH_PORT，外壳自己健康检查监听的端口。
                                        # 三个 Go 外壳实例共用同一份镜像，这个值没法像普通
@@ -56,16 +69,16 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.4.6
+  image: brickenterprise/be-shell-go:0.4.7
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见
                                       # docs/plans/04b-验证记录.md Task 0.1 真机记录
   labels:                            # 五个成员各自的 prometheus.io/port 已经从它们
-                                      # 自己的 component.yaml 里删掉（同一批改动，见
-                                      # docs/dev/brickKit反馈-servedBy的labels合并漏了
-                                      # 排除规则.md）——合并后指标只能走外壳自己这一个
-                                      # 共享抓取端口，在这里补一份
+                                      # 自己的 component.yaml 里删掉（同一批改动，
+                                      # 已反馈给 brickKit 并在 v0.4.1 修复：servedBy
+                                      # 成员的 labels 不再参与合并）——合并后指标只能
+                                      # 走外壳自己这一个共享抓取端口，在这里补一份
     prometheus.io/scrape: "true"
     prometheus.io/port: "8090"
     prometheus.io/path: "/metrics"
