@@ -1,0 +1,52 @@
+apiVersion: brickkit/v1
+kind: Component
+
+metadata:
+  id: shell/go-backoffice
+  name: Go 外壳二（crm/hrm 后台域）
+  version: 0.4.6                     # 同 shell/go-core：直接复用 be-shell-go 这个
+                                      # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像
+  description: 把 crm/opportunity 合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
+  license: Apache-2.0
+  vendor: brickKit
+
+tags: [shell, go]
+
+dependencies:
+  components: []
+  resources:
+    - { kind: database, engine: postgresql }
+    - { kind: mq,       engine: nats }
+
+configSchema:
+  type: object
+  properties:
+    shellName:
+      type: string
+    shellHealthPort:                  # → SHELL_HEALTH_PORT，值须与下面 deployment.port
+                                       # 相同，同 shell/go-core 的判据
+      type: string
+    otelBaseUrl:
+      type: string
+      default: ""
+    iamJwksUrl:
+      type: string
+    authzBundleUrl:
+      type: string
+
+deployment:
+  type: container
+  image: brickenterprise/be-shell-go:0.4.6
+  port: 8116                         # registry/ports.tsv，_shell-go-backoffice 行
+  labels:                            # 同 shell/go-core：成员自己的 prometheus.io/port
+                                      # 已删掉，合并后指标只走外壳这一个共享端口
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8116"
+    prometheus.io/path: "/metrics"
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }   # 目前只有一个成员，请求值先按单组件下限给
+
+healthCheck:
+  type: http
+  path: /healthz
+  startPeriodSeconds: 300

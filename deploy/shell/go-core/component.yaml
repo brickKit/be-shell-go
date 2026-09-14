@@ -1,0 +1,82 @@
+apiVersion: brickkit/v1
+kind: Component
+
+metadata:
+  id: shell/go-core                  # 阶段四附加 Task 0.4：servedBy 落地后外壳本身也要有
+                                      # 一份真实的 component.yaml，才能被别的组件 servedBy
+                                      # 指向（brickkit.yaml 的 sources 单独加了一条指向
+                                      # ./shells/go/deploy，跟 ./components 那条分开，
+                                      # 见 registry/README.md 规矩 3b、docs/plans/
+                                      # 04b-验证记录.md Task 0.4）
+  name: Go 外壳一（mdm/erp 核心域）
+  version: 0.4.6                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+                                      # 不另起一套版本号——镜像就是这个 tag 构建出来的
+                                      # （shells/go/Makefile 的 image 目标），两者天生一致，
+                                      # 不需要额外的对齐工作
+  description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
+  license: Apache-2.0
+  vendor: brickKit
+
+tags: [shell, go]
+
+dependencies:
+  components: []                     # 外壳不声明谁 servedBy 它——那是成员自己在各自
+                                      # component.yaml 之外、brickkit.yaml 里声明的事，
+                                      # 由平台生成时反向扫描出来，外壳这边不需要（也不该）
+                                      # 知道自己收编了谁
+  resources:
+    - { kind: database, engine: postgresql }   # 外壳自己持有共享连接池（设计书§13.3铁律二）
+    - { kind: mq,       engine: nats }         # 成员的 NATS 消费/发布都走这一个连接
+
+configSchema:
+  type: object
+  properties:
+    shellName:                        # → SHELL_NAME，cmd/shell/main.go 用它从
+                                       # shell-config.json 里挑出自己要装的那个外壳；
+                                       # 三个 Go 外壳实例共用同一份镜像，靠这一项区分身份
+      type: string
+    shellHealthPort:                  # → SHELL_HEALTH_PORT，外壳自己健康检查监听的端口。
+                                       # 三个 Go 外壳实例共用同一份镜像，这个值没法像普通
+                                       # 组件那样编译进镜像里的 component.yaml 直接读
+                                       # （besdk.RunStandalone 的 loadOwnPorts 那条路对
+                                       # "一份镜像、多个实例"这个形状不成立），跟 shellName
+                                       # 一样必须走 configSchema——值必须与上面
+                                       # deployment.port 相同，同 local:true 的
+                                       # localPort==deployment.port 是同一类"两处写同一个
+                                       # 值"的既有约定，不是新出现的坑
+      type: string
+    otelBaseUrl:                      # ⚠️ 不能叫 otelEndpoint，*_ENDPOINT 是保留后缀
+      type: string
+      default: ""                     # 空 → Blackhole Exporter，零成本（§7.5）
+    iamJwksUrl:                       # JWT 本地验签的公钥来源，外壳自己的健康检查/权限
+                                       # 判定装配需要，不对 infra-iam-casdoor 建依赖边
+      type: string
+    authzBundleUrl:                   # 功能权限判定的 bundle 轮询地址，不建依赖边
+      type: string
+
+deployment:
+  type: container
+  image: brickenterprise/be-shell-go:0.4.6
+  port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
+                                      # _shell-go-core 行）——不是任何一个成员的端口，
+                                      # 成员各自的端口/地址走 servedBy 网络别名，见
+                                      # docs/plans/04b-验证记录.md Task 0.1 真机记录
+  labels:                            # 五个成员各自的 prometheus.io/port 已经从它们
+                                      # 自己的 component.yaml 里删掉（同一批改动，见
+                                      # docs/dev/brickKit反馈-servedBy的labels合并漏了
+                                      # 排除规则.md）——合并后指标只能走外壳自己这一个
+                                      # 共享抓取端口，在这里补一份
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8090"
+    prometheus.io/path: "/metrics"
+  resources:
+    requests: { cpu: "200m", memory: "256Mi" }   # 五个模块共享一个进程，请求值按合并后
+                                                  # 的合理下限给，不是单组件的 100m/128Mi
+
+healthCheck:
+  type: http
+  path: /healthz                     # 只答"外壳进程本身活着"，不查任何成员、不查依赖
+                                      # （internal/shell.Config.HealthPort 的既有判据，
+                                      # 同设计书 §12.3.6 对每个模块自己 /healthz 的要求）
+  startPeriodSeconds: 300            # 外壳镜像用 300（总纲 Iron Rule 3），比单组件的
+                                      # 60/90/120 更长——五个模块的迁移得依次跑完
