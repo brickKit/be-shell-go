@@ -5,14 +5,24 @@
 // 04 §12 的既定结论："部署几份实例纯粹是运行时配置问题"，internal/shell.Run
 // 本来就接受任意 Modules 子集，不需要为每个外壳单独建一份镜像/仓库）。
 //
-// 哪些模块属于哪个外壳、端口/schema、依赖地址怎么改写，全部来自
-// be-ops 产出 4（shell-config.json）/产出 7（shell-env.json）——这里只
-// 负责两件事：①读那两份数据文件、按 SHELL_NAME 挑出自己要装的那个外壳；
-// ②把数据里的 componentId 字符串映到真实的 Go 源码 import（这一步不能
-// 数据驱动，ModuleSpec.New 必须是静态 import，见 internal/shell.ModuleSpec
-// 的字段注释）。除此之外不做任何装配决策——哪个组件该不该合并、合并成
-// 几个外壳，那是 assembly.yaml/registry/schemas.tsv 的既定数据，不是这
-// 个文件该决定的。
+// 哪些模块属于哪个外壳、端口/schema/configSchema 值，全部来自 be-ops
+// 产出 4（shell-config.json）——这里负责三件事：①读这份数据文件、按
+// SHELL_NAME 挑出自己要装的那个外壳；②按 BRICKKIT_SERVED_MEMBERS（平台
+// 原生注入，servedBy 场景下"这次真的被收编、活着"的成员清单）再筛一遍，
+// 只装真的被收编的那些——shell-config.json 里列出的是"这个外壳理论上
+// 有哪些成员"，不等于"这次部署真的都被收编了"（一个成员可能还没切成
+// servedBy、或者被临时摘掉）；③把数据里的 componentId 字符串映到真实的
+// Go 源码 import（这一步不能数据驱动，ModuleSpec.New 必须是静态 import，
+// 见 internal/shell.ModuleSpec 的字段注释）。除此之外不做任何装配决策——
+// 哪个组件该不该合并、合并成几个外壳，那是 assembly.yaml/registry/
+// schemas.tsv 的既定数据，不是这个文件该决定的。
+//
+// ⚠️ 阶段四附加 Task 0.2/0.3：原来还要读产出 7（shell-env.json）做依赖
+// 地址改写 + 导出到进程环境（internal/shell.exportDependencyEndpoints）
+// ——servedBy 落地后这两步都不需要了：brickKit 自己在生成阶段就把
+// *_ENDPOINT 类变量直接合并进外壳容器自己的 os.Environ()，这个进程一
+// 启动就已经看得见，不需要本文件/internal/shell 再做任何搬运。完整
+// 调研过程见装配仓库 docs/plans/04b-验证记录.md Task 0.2。
 package main
 
 import (
@@ -22,7 +32,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 
 	besdk "github.com/brickKit/be-sdk-go"
@@ -68,7 +80,7 @@ var moduleRegistry = map[string]moduleCtor{
 // 的形状——字段名与 tools/be-ops/internal/shellconfig.Module/Shell 逐一
 // 对应。两个仓库是两个独立的 Go module，`internal/` 的可见性规则不允许
 // 直接 import 那边的类型，这里按 JSON 字段名重新声明一份，耦合点是
-// 数据形状，不是 Go 类型（同 be-ops shell-env 包文档："自己另算的那份，
+// 数据形状，不是 Go 类型（同 be-ops genyaml 包文档："自己另算的那份，
 // 早晚和平台的算法分叉"这条判据反过来也成立：约定数据格式，而不是
 // 共享代码，才不会跨仓库耦合出一条隐藏的编译期依赖）。
 type shellConfigModule struct {
@@ -77,24 +89,15 @@ type shellConfigModule struct {
 	Schema      string         `json:"schema"`
 	HTTPPort    int            `json:"httpPort"`
 	ExtraPorts  map[string]int `json:"extraPorts,omitempty"`
+	// Config 是这个模块自己的 configSchema 解析结果（component.yaml 的
+	// default 与 brickkit.yaml 的 config: 字面量已经合并好），阶段四
+	// 附加 Task 0.2 起取代了原来单独一份 shell-env.json 的 Env 字段。
+	Config map[string]string `json:"config,omitempty"`
 }
 
 type shellConfigShell struct {
 	Name    string              `json:"name"`
 	Modules []shellConfigModule `json:"modules"`
-}
-
-// shellEnvModule/shellEnvShell 是产出 7（shell-env.json）的形状——
-// shellenv.ModuleEnv/ShellEnv 目前没有显式 json tag，Go 默认按字段名
-// 编码，这里原样对应（大写字段名），不是笔误。
-type shellEnvModule struct {
-	ComponentID string
-	Env         map[string]string
-}
-
-type shellEnvShell struct {
-	Name    string
-	Modules []shellEnvModule
 }
 
 func main() {
@@ -142,60 +145,103 @@ func main() {
 	}
 }
 
-// buildModules 读 SHELL_CONFIG_JSON（产出 4）+ SHELL_ENV_JSON（产出 7）
-// 两份文件，挑出 shellName 对应的那个外壳，拼出真实的 []shell.ModuleSpec。
-// 两份文件路径都要求显式配置（不给默认路径）——外壳到底该读哪份数据，
-// 应该由部署那一层（shell-compose.yml）显式决定，不该在这里悄悄假设
-// 一个约定俗成的相对路径，那类假设正是"自己另算一遍"的开端。
+// buildModules 读 SHELL_CONFIG_JSON（产出 4），挑出 shellName 对应的
+// 那个外壳，再按 BRICKKIT_SERVED_MEMBERS 筛出这次真的被收编、活着的
+// 成员，拼出真实的 []shell.ModuleSpec。
 func buildModules(shellName string) ([]shell.ModuleSpec, error) {
 	configPath := os.Getenv("SHELL_CONFIG_JSON")
-	envPath := os.Getenv("SHELL_ENV_JSON")
-	if configPath == "" || envPath == "" {
-		return nil, fmt.Errorf("SHELL_CONFIG_JSON/SHELL_ENV_JSON 未设置（be-ops shell-config/shell-env 的产出路径）")
+	if configPath == "" {
+		return nil, fmt.Errorf("SHELL_CONFIG_JSON 未设置（be-ops shell-config 的产出路径）")
+	}
+	served, err := servedMemberSet()
+	if err != nil {
+		return nil, err
 	}
 
 	configShells, err := readShellConfig(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("读 %s 失败: %w", configPath, err)
 	}
-	envShells, err := readShellEnv(envPath)
-	if err != nil {
-		return nil, fmt.Errorf("读 %s 失败: %w", envPath, err)
-	}
-
 	configShell, ok := findConfigShell(configShells, shellName)
 	if !ok {
-		return nil, fmt.Errorf("shell-config.json 里没有外壳 %q（是不是 brickkit.yaml 还没原子式切换，或者 SHELL_NAME 拼错了）", shellName)
-	}
-	envByComponent, err := envMapForShell(envShells, shellName)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("shell-config.json 里没有外壳 %q（是不是 SHELL_NAME 拼错了）", shellName)
 	}
 
 	// shell-config.json 里的模块顺序已经是 be-ops 按依赖关系拓扑排序过的
 	// 结果（tools/be-ops/internal/shellconfig 的既有职责），这里原样保留
 	// 顺序传给 shell.Run——迁移与启动顺序由这个顺序决定，本文件不重新排序。
+	matched := make(map[string]bool, len(served))
 	specs := make([]shell.ModuleSpec, 0, len(configShell.Modules))
 	for _, m := range configShell.Modules {
+		name := versionedServiceName(m.ComponentID, m.Version)
+		if !served[name] {
+			// shell-config.json 列的是"这个外壳理论上有哪些成员"，不是
+			// "这次都被收编了"——没在 BRICKKIT_SERVED_MEMBERS 里的成员
+			// 这次没被平台收编（还没切成 servedBy，或者被临时摘掉），
+			// 正常跳过，不是错误。
+			continue
+		}
+		matched[name] = true
 		ctor, ok := moduleRegistry[m.ComponentID]
 		if !ok {
 			return nil, fmt.Errorf("组件 %s 在 shell-config.json 里，但 moduleRegistry 没有登记它的真实 New 函数——是不是漏了给它加 import", m.ComponentID)
 		}
-		env, ok := envByComponent[m.ComponentID]
-		if !ok {
-			return nil, fmt.Errorf("组件 %s 在 shell-config.json 里，但 shell-env.json 的外壳 %q 下找不到它对应的环境变量", m.ComponentID, shellName)
-		}
 		specs = append(specs, shell.ModuleSpec{
 			ComponentID:      m.ComponentID,
 			ComponentVersion: m.Version,
-			Env:              env,
+			Env:              m.Config,
 			HTTPPort:         m.HTTPPort,
 			ExtraPorts:       m.ExtraPorts,
 			Schema:           m.Schema,
 			New:              ctor,
 		})
 	}
+
+	if len(matched) != len(served) {
+		var missing []string
+		for name := range served {
+			if !matched[name] {
+				missing = append(missing, name)
+			}
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 里有 shell-config.json 找不到的成员：%v（是不是 brickkit.yaml 改完之后忘了重新跑 be-ops shell-config）", missing)
+	}
 	return specs, nil
+}
+
+// servedMemberSet 读 BRICKKIT_SERVED_MEMBERS（平台原生注入，servedBy
+// 外壳"这次真的被收编、活着"的成员清单，逗号分隔的版本化服务名）。
+//
+// ⚠️ 必须用 os.LookupEnv 而不是 os.Getenv：这个变量"不存在"和"存在但是
+// 空字符串"是两种不同的状态，语义完全不同——不存在意味着这个容器可能
+// 根本不是被 servedBy 正常收编启动的（平台总会至少注入一个空字符串，
+// 真的读不到通常说明是手动 docker run 忘了传，必须报错，不能悄悄退化成
+// "全部实例化"这类旧行为，那会掩盖真实的配置错误）；空字符串是合法状态，
+// 意味着这次没有任何成员被收编（都还没切换、或者都被临时摘掉了），
+// 应该装出 0 个模块，而不是报错。
+func servedMemberSet() (map[string]bool, error) {
+	raw, ok := os.LookupEnv("BRICKKIT_SERVED_MEMBERS")
+	if !ok {
+		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 未设置——这个容器看起来不是被 servedBy 正常收编启动的（平台总会至少注入一个空字符串），检查是不是手动 docker run 漏传了这个变量")
+	}
+	set := map[string]bool{}
+	if raw == "" {
+		return set, nil
+	}
+	for _, name := range strings.Split(raw, ",") {
+		set[strings.TrimSpace(name)] = true
+	}
+	return set, nil
+}
+
+// versionedServiceName 与 brickKit 自己推导服务名的算法逐字对应
+// （总纲 §2.1："/ → -、. → -、全部小写，再接精确版本号"）——
+// "mdm/customer"@"1.0.7" → "mdm-customer-1-0-7"，跟
+// BRICKKIT_SERVED_MEMBERS 里的写法逐字一致。
+func versionedServiceName(id, version string) string {
+	s := strings.NewReplacer("/", "-", ".", "-").Replace(id + "-" + version)
+	return strings.ToLower(s)
 }
 
 func readShellConfig(path string) ([]shellConfigShell, error) {
@@ -210,18 +256,6 @@ func readShellConfig(path string) ([]shellConfigShell, error) {
 	return shells, nil
 }
 
-func readShellEnv(path string) ([]shellEnvShell, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var shells []shellEnvShell
-	if err := json.Unmarshal(data, &shells); err != nil {
-		return nil, err
-	}
-	return shells, nil
-}
-
 func findConfigShell(shells []shellConfigShell, name string) (shellConfigShell, bool) {
 	for _, s := range shells {
 		if s.Name == name {
@@ -229,18 +263,4 @@ func findConfigShell(shells []shellConfigShell, name string) (shellConfigShell, 
 		}
 	}
 	return shellConfigShell{}, false
-}
-
-func envMapForShell(shells []shellEnvShell, name string) (map[string]map[string]string, error) {
-	for _, s := range shells {
-		if s.Name != name {
-			continue
-		}
-		out := make(map[string]map[string]string, len(s.Modules))
-		for _, m := range s.Modules {
-			out[m.ComponentID] = m.Env
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("shell-env.json 里没有外壳 %q（是不是 be-ops shell-env 生成时这个外壳还没原子式切换完，被跳过了）", name)
 }

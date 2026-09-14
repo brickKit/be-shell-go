@@ -22,15 +22,20 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   用测试现生成的真实 RSA 密钥；`integration-im-dingtalk` 用 `.env` 里真实的
   钉钉凭据（New/Start 全程零网络调用，不会真的联系钉钉服务器，见测试文件顶部
   注释）。
-- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4（`shell-config.json`）/
-  产出 7（`shell-env.json`）——同一份镜像按 `SHELL_NAME` 环境变量的值
-  （`go-core`/`go-backoffice`/`go-infra`）从两份数据文件里挑出自己要装的
-  外壳，`moduleRegistry` 是本仓库唯一"componentId 字符串 → 真实 Go 源码
-  import"的静态映射（数据驱动配置，代码驱动装配，`ModuleSpec.New` 不能
-  从数据文件动态加载，见 `internal/shell.ModuleSpec` 的既有注释）。
-  `cmd/shell/main_test.go` 用手写夹具覆盖了"按外壳挑模块"/"外壳不存在时
-  报错"/"外壳还没原子式切换完时报错"/"11 个真实组件都在 moduleRegistry
-  里"四类断言，不需要真实基础设施。
+- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4（`shell-config.json`）——
+  同一份镜像按 `SHELL_NAME` 环境变量的值（`go-core`/`go-backoffice`/
+  `go-infra`）从这份数据文件里挑出自己要装的外壳，再按平台原生注入的
+  `BRICKKIT_SERVED_MEMBERS` 筛出这次真的被 `servedBy` 收编、活着的成员
+  （阶段四附加 Task 0.2/0.3 起——原来还需要单独一份 `shell-env.json`
+  才能拿到每个模块自己的 `Env`，已并入 `shell-config.json` 的 `Config`
+  字段，见下方"现状补充"）；`moduleRegistry` 是本仓库唯一"componentId
+  字符串 → 真实 Go 源码 import"的静态映射（数据驱动配置，代码驱动装配，
+  `ModuleSpec.New` 不能从数据文件动态加载，见 `internal/shell.ModuleSpec`
+  的既有注释）。`cmd/shell/main_test.go` 用手写夹具覆盖了"按外壳挑模块"/
+  "外壳不存在时报错"/"按 `BRICKKIT_SERVED_MEMBERS` 筛成员的四种状态
+  （未设置报错/空字符串零模块/部分列出只装那几个/列出了 shell-config
+  里找不到的成员报错）"/"11 个真实组件都在 moduleRegistry 里"五类断言，
+  不需要真实基础设施。
 - **真机部署验证（阶段四 Task 6 最后一步，2026-09-13 完成）**：`docker build`
   出的镜像，用同一份镜像分别起了 `shell-go-core`/`shell-go-backoffice`/
   `shell-go-infra` 三个真实容器，`brickkit.yaml` 也真的原子式切换成
@@ -111,6 +116,28 @@ JWT）→ `erp-sales` 真实建单确认（自己的定价引擎重算单价）�
 `DRAFT`、真实建出 `infra-workflow` 异常待办、`infra-notification` 正确路由；最后用真实订单数据调
 `infra-print` 渲染出送货单 PDF。全程跨 `go-backoffice`/`go-core`/`py-render` 三个外壳。完整细节见父
 仓库 `docs/plans/04-阶段四-做外壳验拆回.md` Task 9。
+
+## 现状补充（阶段四附加 Task 0.2/0.3 完成，2026-09-14）——servedBy 落地，上面这个 bug 的修复代码本身退休了
+
+brickKit 新增了 `servedBy` 机制（组件声明"我的工作负载由外壳组件 X 提供"，platform 原生支持一份
+`brickkit.yaml` 里部分组件独立、部分组件被外壳收编）之后，上面 Task 9 那条 `exportDependencyEndpoints`
+——连同它要读的 `be-ops` 产出 7（`shell-env.json`）——整个退休了：`servedBy` 落地后，brickKit 自己在
+生成阶段就把 `*_ENDPOINT` 类变量直接合并进外壳容器**自己的** `os.Environ()`，这个进程一启动就已经看
+得见，不再需要 `internal/shell.Run` 自己再 `os.Setenv` 一遍。函数本体与它的两条回归测试
+（`TestExportDependencyEndpoints_*`）已从 `internal/shell/shell.go`/`shell_test.go` 删除。
+
+⚠️ **这不代表上面 Task 9 记的那个 bug/根因分析是错的**——`besdk.Endpoint()` 读 `os.LookupEnv` 不是
+`rt.Config` 这条平台既有设计依然成立，只是"谁负责把值放进 `os.Environ()`"这件事的责任方换了：以前是
+`be-shell-go` 自己（因为平台完全不知道"外壳"这个概念），现在是 brickKit 自己（因为 `servedBy` 让平台
+第一次知道了"这些组件的工作负载合并到了这个容器里"）。这段历史继续留着，是因为它是这条平台设计
+（`os.LookupEnv` not `rt.Config`）第一次被真机验证出来的地方，具有独立的参考价值。
+
+`cmd/shell/main.go` 的 `buildModules` 同时换了第二件事：不再无条件把 `shell-config.json` 里列出的
+模块全部实例化，改成额外按平台原生注入的 `BRICKKIT_SERVED_MEMBERS`（这次真的被收编、活着的成员，
+逗号分隔的版本化服务名）筛一遍——`shell-config.json` 现在表达的是"这个外壳理论上有哪些成员"，不再
+等价于"这次都被收编了"。每个模块自己的 `configSchema` 解析结果（原来 `shell-env.json` 的 `Env` 字段）
+也一并挪进了 `shell-config.json` 新增的 `Config` 字段（`be-ops` 侧的完整调研过程见装配仓库
+`docs/plans/04b-验证记录.md` Task 0.2）。
 
 ## 现状补充（阶段四 Task 8 完成，2026-09-13）
 
