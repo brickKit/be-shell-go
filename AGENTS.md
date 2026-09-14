@@ -7,7 +7,7 @@
 | 仓库名 | `be-shell-go` |
 | 目录 | `shells/go/`（不进 `brickkit.yaml`，不是 brickKit 组件） |
 | 语言 / 框架 | Go；只依赖 `be-sdk-go`、`golang-migrate`（`iofs` 源驱动）、`golang.org/x/sync/errgroup` |
-| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——**全部 11 个**都已在 `internal/shell/real_modules_test.go` 里真机验证过合并进程，`brickkit.yaml` 也已真机原子式切换成 `local: true`；`cmd/shell/main.go` 按 `SHELL_NAME` 读 `be-ops` 产出 4/7（`SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 两个环境变量指向的 JSON 文件）装配 `Config.Modules`，真机起过 3 个外壳容器，见 `README.md` |
+| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——**全部 11 个**都已在 `internal/shell/real_modules_test.go` 里真机验证过合并进程；`brickkit.yaml` 已从 `local: true` 全量切到真实 `servedBy`（阶段四附加 Task 0.4，外壳本身也是真实 brickKit 组件，见 `shells/go/deploy/shell/*/component.yaml`）；`cmd/shell/main.go` 解析 `SHELL_CONFIG_JSON`（内容就是这个外壳自己的 modules 数组，`be-ops shell-config --shell` 生成、写死在 `brickkit.yaml` 的 configSchema 值里）装配 `Config.Modules`，真机起过 4 个外壳容器，见 `README.md` |
 | 设计真相源 | 《BrickEnterprise 设计书.md》第 13 章（为什么、七条铁律、代价）+ `docs/plans/04-阶段四-做外壳验拆回.md`（本仓库具体要做什么）+ `docs/design/_调研记录/04-阶段四.md`（技术判断的推演过程）——本文件与它们冲突时，以那三份为准 |
 
 ## 这个仓库存在的唯一理由
@@ -39,18 +39,20 @@
 
 ## 已知的、故意留到后面任务的缺口（不是遗漏，是任务顺序）
 
-- `Config.Modules` 已经真实装配（`cmd/shell/main.go` 按 `SHELL_NAME` 从 `be-ops`
-  产出 4/7 的 JSON 里挑模块），`Config.PGDSN`/`NATSURL`/`IamJwksURL`/`AuthzBundleURL`
+- `Config.Modules` 已经真实装配（`cmd/shell/main.go` 解析 `SHELL_CONFIG_JSON`
+  的内容），`Config.PGDSN`/`NATSURL`/`IamJwksURL`/`AuthzBundleURL`
   仍然是靠 `cmd/shell/main.go` 读容器自己的环境变量（`DATABASE_*`/`MQ_*`/
   `IAM_JWKS_URL`/`AUTHZ_BUNDLE_URL`）——这些是"外壳这个容器本身"的身份，不是任何
-  一个模块的数据，本来就不该来自 `SHELL_ENV_JSON`（那份文件是"每个模块自己的
-  env map"，见 `internal/shell.ModuleSpec.Env` 的字段注释），现状是符合设计的
-  终态，不是待办。
-- `HealthPort`/`SHELL_CONFIG_JSON`/`SHELL_ENV_JSON` 现在由父仓库根目录的
-  `infra/shell-compose.yml` 配置/挂载（`make shell-up` 会先 `make shell-gen`
-  重新生成两份 JSON 到 `.brickkit/shellgen/`）——不再是 Task 6 阶段手动
-  `docker run -v` 的临时状态，Task 8 已完成，见父仓库
-  `docs/plans/04-阶段四-做外壳验拆回.md` Task 8 与本仓库 README 的补充说明。
+  一个模块的数据，本来就不该来自模块自己的 `Config`（见
+  `internal/shell.ModuleSpec.Env` 的字段注释），现状是符合设计的终态，不是待办。
+- `SHELL_CONFIG_JSON`/`SHELL_NAME`/`SHELL_HEALTH_PORT` 现在全部来自外壳自己的
+  `component.yaml`（`shells/go/deploy/shell/*/`）的 `configSchema`，值写在
+  `brickkit.yaml` 该外壳组件的 `config:` 块里——不是挂载文件（brickKit 的
+  manifest 模型没有 volumes 字段），`SHELL_CONFIG_JSON` 的值直接是
+  `be-ops shell-config --shell <name>` 打印出的 JSON 字符串本身（阶段四附加
+  Task 0.4，见本仓库 README 的补充说明）。`infra/shell-compose.yml`/
+  `make shell-gen`/`make shell-up` 那一套手写编排是这次迁移之前的旧机制，
+  是否退休尚未做最终决定（见父仓库 `docs/plans/04b-验证记录.md` Task 0.4/0.5）。
   ⚠️ 健康检查命令是普通 `wget -q -O /dev/null`，不是 `--spider`——那个坑是
   Python 侧才踩到的（FastAPI 的 `GET /` 不支持 HEAD），但两边的 Dockerfile/
   compose 判据保持一致，不要为了"Go 这边其实没事"就改回 `--spider`。

@@ -22,20 +22,20 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   用测试现生成的真实 RSA 密钥；`integration-im-dingtalk` 用 `.env` 里真实的
   钉钉凭据（New/Start 全程零网络调用，不会真的联系钉钉服务器，见测试文件顶部
   注释）。
-- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4（`shell-config.json`）——
-  同一份镜像按 `SHELL_NAME` 环境变量的值（`go-core`/`go-backoffice`/
-  `go-infra`）从这份数据文件里挑出自己要装的外壳，再按平台原生注入的
-  `BRICKKIT_SERVED_MEMBERS` 筛出这次真的被 `servedBy` 收编、活着的成员
-  （阶段四附加 Task 0.2/0.3 起——原来还需要单独一份 `shell-env.json`
-  才能拿到每个模块自己的 `Env`，已并入 `shell-config.json` 的 `Config`
-  字段，见下方"现状补充"）；`moduleRegistry` 是本仓库唯一"componentId
-  字符串 → 真实 Go 源码 import"的静态映射（数据驱动配置，代码驱动装配，
+- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4——`SHELL_CONFIG_JSON`
+  环境变量的内容直接是这一个外壳自己的 `modules` 数组（`be-ops
+  shell-config --shell <name>` 打印出来的那一行，阶段四附加 Task 0.4起，
+  见下方"现状补充"：servedBy 外壳没有 volumes 可以挂载文件，只能把内容
+  本身当一个 configSchema 字符串写进 `brickkit.yaml`），再按平台原生
+  注入的 `BRICKKIT_SERVED_MEMBERS` 筛出这次真的被 `servedBy` 收编、
+  活着的成员；`moduleRegistry` 是本仓库唯一"componentId 字符串 → 真实
+  Go 源码 import"的静态映射（数据驱动配置，代码驱动装配，
   `ModuleSpec.New` 不能从数据文件动态加载，见 `internal/shell.ModuleSpec`
-  的既有注释）。`cmd/shell/main_test.go` 用手写夹具覆盖了"按外壳挑模块"/
-  "外壳不存在时报错"/"按 `BRICKKIT_SERVED_MEMBERS` 筛成员的四种状态
-  （未设置报错/空字符串零模块/部分列出只装那几个/列出了 shell-config
-  里找不到的成员报错）"/"11 个真实组件都在 moduleRegistry 里"五类断言，
-  不需要真实基础设施。
+  的既有注释）。`cmd/shell/main_test.go` 用手写夹具覆盖了"解析
+  `SHELL_CONFIG_JSON`"/"按 `BRICKKIT_SERVED_MEMBERS` 筛成员的几种状态
+  （未设置报错/空字符串零模块/部分列出只装那几个/列出了找不到的成员
+  报错）"/"JSON 格式不对报错"/"11 个真实组件都在 moduleRegistry 里"
+  六类断言，不需要真实基础设施。
 - **真机部署验证（阶段四 Task 6 最后一步，2026-09-13 完成）**：`docker build`
   出的镜像，用同一份镜像分别起了 `shell-go-core`/`shell-go-backoffice`/
   `shell-go-infra` 三个真实容器，`brickkit.yaml` 也真的原子式切换成
@@ -138,6 +138,24 @@ brickKit 新增了 `servedBy` 机制（组件声明"我的工作负载由外壳�
 等价于"这次都被收编了"。每个模块自己的 `configSchema` 解析结果（原来 `shell-env.json` 的 `Env` 字段）
 也一并挪进了 `shell-config.json` 新增的 `Config` 字段（`be-ops` 侧的完整调研过程见装配仓库
 `docs/plans/04b-验证记录.md` Task 0.2）。
+
+## 现状补充（阶段四附加 Task 0.4 完成，2026-09-15）——SHELL_CONFIG_JSON 从"文件路径"改成"内容本身"
+
+真机把 `brickkit.yaml` 全量切到真实 `servedBy` 之后（外壳本身第一次成为真正的 brickKit 组件，见
+`shells/go/AGENTS.md`），外壳容器全部 crash-loop：`SHELL_CONFIG_JSON 未设置`。根因：这个变量原来的
+设计是"文件路径 + 挂载卷"（`infra/shell-compose.yml` 时代手写的 volume mount），但 brickKit 的
+manifest 模型**没有 `volumes` 字段**——servedBy 外壳完全没有"挂载一份文件进容器"这条路可走。
+
+修复：`SHELL_CONFIG_JSON` 的语义从"一份文件的路径"改成"内容本身"——环境变量的值直接是
+`be-ops shell-config --shell <name>` 打印出的、这一个外壳自己的 `modules` 数组（compact JSON），
+跟 `infra/authz` 的 `permissionCatalog` 是同一种模式：一段生成的字符串，写死在 `brickkit.yaml` 该
+外壳组件的 `config.shellConfigJson` 里，源头数据（谁属于这个外壳、端口/schema/config）变了就重新
+跑一次那条命令、手动贴回去。副作用是不再需要"按 `SHELL_NAME` 从多个外壳的清单里挑一个"这一步——内容
+从生成的那一刻起就已经只属于这一个外壳，`buildModules` 因此不再接收 `shellName` 参数。`SHELL_NAME`
+本身还留着，用于 `shell.Config.ShellName`/日志和三个 Go 外壳实例的运行时身份区分（configSchema 的
+`shellName` 项）。
+
+完整过程与真机复核结果见装配仓库 `docs/plans/04b-验证记录.md` Task 0.4。
 
 ## 现状补充（阶段四 Task 8 完成，2026-09-13）
 

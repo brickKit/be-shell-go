@@ -5,13 +5,13 @@
 // 04 §12 的既定结论："部署几份实例纯粹是运行时配置问题"，internal/shell.Run
 // 本来就接受任意 Modules 子集，不需要为每个外壳单独建一份镜像/仓库）。
 //
-// 哪些模块属于哪个外壳、端口/schema/configSchema 值，全部来自 be-ops
-// 产出 4（shell-config.json）——这里负责三件事：①读这份数据文件、按
-// SHELL_NAME 挑出自己要装的那个外壳；②按 BRICKKIT_SERVED_MEMBERS（平台
-// 原生注入，servedBy 场景下"这次真的被收编、活着"的成员清单）再筛一遍，
-// 只装真的被收编的那些——shell-config.json 里列出的是"这个外壳理论上
+// 哪些模块属于这个外壳、端口/schema/configSchema 值，全部来自 be-ops
+// 产出 4（`be-ops shell-config --shell <name>` 打印出的这一个外壳自己
+// 的 modules 数组）——这里负责两件事：①按 BRICKKIT_SERVED_MEMBERS（平台
+// 原生注入，servedBy 场景下"这次真的被收编、活着"的成员清单）筛一遍，
+// 只装真的被收编的那些——SHELL_CONFIG_JSON 里列出的是"这个外壳理论上
 // 有哪些成员"，不等于"这次部署真的都被收编了"（一个成员可能还没切成
-// servedBy、或者被临时摘掉）；③把数据里的 componentId 字符串映到真实的
+// servedBy、或者被临时摘掉）；②把数据里的 componentId 字符串映到真实的
 // Go 源码 import（这一步不能数据驱动，ModuleSpec.New 必须是静态 import，
 // 见 internal/shell.ModuleSpec 的字段注释）。除此之外不做任何装配决策——
 // 哪个组件该不该合并、合并成几个外壳，那是 assembly.yaml/registry/
@@ -23,6 +23,17 @@
 // *_ENDPOINT 类变量直接合并进外壳容器自己的 os.Environ()，这个进程一
 // 启动就已经看得见，不需要本文件/internal/shell 再做任何搬运。完整
 // 调研过程见装配仓库 docs/plans/04b-验证记录.md Task 0.2。
+//
+// ⚠️ 阶段四附加 Task 0.4：SHELL_CONFIG_JSON 从"文件路径"改成了"内容本身"
+// ——servedBy 外壳没有自己的 component.yaml 之外的任何东西可以挂载
+// （brickKit 的 manifest 模型没有 volumes 字段），"文件路径 + 挂载卷"这
+// 条路在没有 volumes 的世界里走不通。现在 SHELL_CONFIG_JSON 的值直接是
+// `be-ops shell-config --shell <name>` 打印出的、这一个外壳自己的
+// modules 数组（compact JSON），跟 infra/authz 的 permissionCatalog 是
+// 同一种模式——一段生成的字符串，写死在 brickkit.yaml 该外壳组件的
+// config.shellConfigJson 里，源头数据变了就重新跑一次那条命令、手动贴
+// 回去。也因此不再需要"按 SHELL_NAME 从多个外壳里挑一个"这一步——
+// 这个环境变量的内容从生成的那一刻起就已经只属于这一个外壳。
 package main
 
 import (
@@ -76,13 +87,14 @@ var moduleRegistry = map[string]moduleCtor{
 	"mdm/product":             mdmproduct.New,
 }
 
-// shellConfigModule/shellConfigShell 是 be-ops 产出 4（shell-config.json）
-// 的形状——字段名与 tools/be-ops/internal/shellconfig.Module/Shell 逐一
-// 对应。两个仓库是两个独立的 Go module，`internal/` 的可见性规则不允许
-// 直接 import 那边的类型，这里按 JSON 字段名重新声明一份，耦合点是
-// 数据形状，不是 Go 类型（同 be-ops genyaml 包文档："自己另算的那份，
-// 早晚和平台的算法分叉"这条判据反过来也成立：约定数据格式，而不是
-// 共享代码，才不会跨仓库耦合出一条隐藏的编译期依赖）。
+// shellConfigModule 是 be-ops 产出 4（`shell-config --shell <name>` 打印
+// 出的这一个外壳自己的 modules 数组）里一条的形状——字段名与
+// tools/be-ops/internal/shellconfig.Module 逐一对应。两个仓库是两个
+// 独立的 Go module，`internal/` 的可见性规则不允许直接 import 那边的
+// 类型，这里按 JSON 字段名重新声明一份，耦合点是数据形状，不是 Go 类型
+// （同 be-ops genyaml 包文档："自己另算的那份，早晚和平台的算法分叉"这
+// 条判据反过来也成立：约定数据格式，而不是共享代码，才不会跨仓库耦合
+// 出一条隐藏的编译期依赖）。
 type shellConfigModule struct {
 	ComponentID string         `json:"componentId"`
 	Version     string         `json:"version"`
@@ -95,21 +107,16 @@ type shellConfigModule struct {
 	Config map[string]string `json:"config,omitempty"`
 }
 
-type shellConfigShell struct {
-	Name    string              `json:"name"`
-	Modules []shellConfigModule `json:"modules"`
-}
-
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	shellName := os.Getenv("SHELL_NAME")
 	if shellName == "" {
-		log.Fatal("SHELL_NAME 未设置（go-core|go-backoffice|go-infra 之一，见 shell-compose.yml）")
+		log.Fatal("SHELL_NAME 未设置（go-core|go-backoffice|go-infra 之一，configSchema 的 shellName 项）")
 	}
 
-	modules, err := buildModules(shellName)
+	modules, err := buildModules()
 	if err != nil {
 		log.Fatalf("装配外壳 %s 失败：%v", shellName, err)
 	}
@@ -145,34 +152,31 @@ func main() {
 	}
 }
 
-// buildModules 读 SHELL_CONFIG_JSON（产出 4），挑出 shellName 对应的
-// 那个外壳，再按 BRICKKIT_SERVED_MEMBERS 筛出这次真的被收编、活着的
-// 成员，拼出真实的 []shell.ModuleSpec。
-func buildModules(shellName string) ([]shell.ModuleSpec, error) {
-	configPath := os.Getenv("SHELL_CONFIG_JSON")
-	if configPath == "" {
-		return nil, fmt.Errorf("SHELL_CONFIG_JSON 未设置（be-ops shell-config 的产出路径）")
+// buildModules 解析 SHELL_CONFIG_JSON（产出 4，`be-ops shell-config
+// --shell <name>` 打印出的内容，这一个外壳自己的 modules 数组），再按
+// BRICKKIT_SERVED_MEMBERS 筛出这次真的被收编、活着的成员，拼出真实的
+// []shell.ModuleSpec。
+func buildModules() ([]shell.ModuleSpec, error) {
+	raw, ok := os.LookupEnv("SHELL_CONFIG_JSON")
+	if !ok || raw == "" {
+		return nil, fmt.Errorf("SHELL_CONFIG_JSON 未设置（be-ops shell-config --shell <name> 的产出，应该是这个外壳自己的 modules 数组）")
 	}
 	served, err := servedMemberSet()
 	if err != nil {
 		return nil, err
 	}
 
-	configShells, err := readShellConfig(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("读 %s 失败: %w", configPath, err)
-	}
-	configShell, ok := findConfigShell(configShells, shellName)
-	if !ok {
-		return nil, fmt.Errorf("shell-config.json 里没有外壳 %q（是不是 SHELL_NAME 拼错了）", shellName)
+	var modules []shellConfigModule
+	if err := json.Unmarshal([]byte(raw), &modules); err != nil {
+		return nil, fmt.Errorf("解析 SHELL_CONFIG_JSON 失败: %w", err)
 	}
 
-	// shell-config.json 里的模块顺序已经是 be-ops 按依赖关系拓扑排序过的
+	// SHELL_CONFIG_JSON 里的模块顺序已经是 be-ops 按依赖关系拓扑排序过的
 	// 结果（tools/be-ops/internal/shellconfig 的既有职责），这里原样保留
 	// 顺序传给 shell.Run——迁移与启动顺序由这个顺序决定，本文件不重新排序。
 	matched := make(map[string]bool, len(served))
-	specs := make([]shell.ModuleSpec, 0, len(configShell.Modules))
-	for _, m := range configShell.Modules {
+	specs := make([]shell.ModuleSpec, 0, len(modules))
+	for _, m := range modules {
 		name := versionedServiceName(m.ComponentID, m.Version)
 		if !served[name] {
 			// shell-config.json 列的是"这个外壳理论上有哪些成员"，不是
@@ -184,7 +188,7 @@ func buildModules(shellName string) ([]shell.ModuleSpec, error) {
 		matched[name] = true
 		ctor, ok := moduleRegistry[m.ComponentID]
 		if !ok {
-			return nil, fmt.Errorf("组件 %s 在 shell-config.json 里，但 moduleRegistry 没有登记它的真实 New 函数——是不是漏了给它加 import", m.ComponentID)
+			return nil, fmt.Errorf("组件 %s 在 SHELL_CONFIG_JSON 里，但 moduleRegistry 没有登记它的真实 New 函数——是不是漏了给它加 import", m.ComponentID)
 		}
 		specs = append(specs, shell.ModuleSpec{
 			ComponentID:      m.ComponentID,
@@ -205,7 +209,7 @@ func buildModules(shellName string) ([]shell.ModuleSpec, error) {
 			}
 		}
 		sort.Strings(missing)
-		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 里有 shell-config.json 找不到的成员：%v（是不是 brickkit.yaml 改完之后忘了重新跑 be-ops shell-config）", missing)
+		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 里有 SHELL_CONFIG_JSON 找不到的成员：%v（是不是 brickkit.yaml 改完之后忘了重新跑 be-ops shell-config --shell 把新的字符串贴回 config.shellConfigJson）", missing)
 	}
 	return specs, nil
 }
@@ -244,23 +248,3 @@ func versionedServiceName(id, version string) string {
 	return strings.ToLower(s)
 }
 
-func readShellConfig(path string) ([]shellConfigShell, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var shells []shellConfigShell
-	if err := json.Unmarshal(data, &shells); err != nil {
-		return nil, err
-	}
-	return shells, nil
-}
-
-func findConfigShell(shells []shellConfigShell, name string) (shellConfigShell, bool) {
-	for _, s := range shells {
-		if s.Name == name {
-			return s, true
-		}
-	}
-	return shellConfigShell{}, false
-}
