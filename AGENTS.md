@@ -62,6 +62,15 @@
   ⚠️ 健康检查命令是普通 `wget -q -O /dev/null`，不是 `--spider`——那个坑是
   Python 侧才踩到的（FastAPI 的 `GET /` 不支持 HEAD），但两边的 Dockerfile/
   compose 判据保持一致，不要为了"Go 这边其实没事"就改回 `--spider`。
+- ⚠️ **`BRICKKIT_SERVED_MEMBERS_CONFIG` 只对非密钥类 config 值成立**：
+  密钥类值（`appTokenSigningKeyPem` 等 6 项）真机 `brickkit up` 复现出
+  这份 JSON 会被 docker compose 自己的全文本 `${VAR}` 替换撑坏（原始
+  换行符插进本该是单行 JSON 的字符串里）——`internal/shell.
+  envWithProcessFallback` 与 `shell/go-infra` 的 6 个密钥类
+  configSchema 项因此**没有**退休，继续走"外壳自己 configSchema 项 +
+  进程环境兜底"这条老路，只是非密钥类 config 值改走了平台原生注入。
+  见 `README.md`"Task 0.6 修补"一节，完整根因分析在
+  `envWithProcessFallback` 本体注释里。
 - 跨外壳的依赖地址（`*_ENDPOINT`）**已经真机触发验证过**（`go-core`/
   `go-backoffice` 跨容器请求 `go-infra` 暴露的 `authzBundleUrl`/`iamJwksUrl`），
   不再是"大概率不会被触发"的推演状态——`docs/design/_调研记录/04-阶段四.md` §4/§12

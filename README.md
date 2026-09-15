@@ -265,3 +265,41 @@ schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只�
 `be-ops shell-config` 子命令、`SHELL_CONFIG_JSON`/密钥兜底机制两条线
 都已经没有存在的理由。真机复核结果见父仓库
 `docs/plans/04b-验证记录.md` Task 0.6。
+
+## 现状补充（阶段四附加 Task 0.6 修补，2026-09-15）——`envWithProcessFallback` 与 6 个密钥类 configSchema 项恢复
+
+上面这一节"整个删除 `envWithProcessFallback`"的判断，真机 `brickkit up`
+（不是 `--dry-run`）复现出是错的——`shell-go-infra` 容器 crash-loop，
+日志是 `解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: invalid character
+'\n' in string literal`。根因跟一开始的直觉相反：`BRICKKIT_SERVED_
+MEMBERS_CONFIG` 这个 JSON **在 brickKit 生成它的那一刻是完全合法
+的**——密钥类的 config 值在 `brickkit.yaml` 里写的是 `${APP_TOKEN_
+SIGNING_KEY_PEM}` 这样的占位符字符串（没有特殊字符），brickKit 原样
+编码进 JSON，没有问题。**问题出在更后面一步**：`docker compose` 读取
+生成好的 `docker-compose.yaml` 时，会对整份文件按纯文本做 `${VAR}`
+替换（这是 docker compose 自己的标准行为，不知道也不关心某个
+`${VAR}` 恰好嵌在一段本该是合法 JSON 的字符串内部）。真实密钥
+（`appTokenSigningKeyPem` 那份 PEM）自带原始换行符，替换进去直接把
+JSON 字符串从中间断开——`docker inspect` 能看到这个环境变量的值在
+文件里就是断开的多行文本，不是一整行合法 JSON。
+
+这跟阶段四附加 Task 0.4 时 `be-ops` 自己的 `genyaml.MergeConfig` 踩过
+的坑是同一类问题（"真实密钥的原始换行符撑坏本该是单行 JSON 的字符
+串"），只是这次坑从"我们自己手写的字符串拼接"搬到了"brickKit 生成
+JSON + docker compose 自己再做一遍全文本 `${VAR}` 替换"这两步之间的
+接缝上——**这不是本项目独有的坑，是 `BRICKKIT_SERVED_MEMBERS_CONFIG`
+这个机制本身在"密钥类配置项还留着 `${VAR}` 占位符"这个场景下都会踩到
+的普适性设计缺口**，已经写成反馈文档给 brickKit（见父仓库 `docs/dev/`
+对应的一次性反馈文档）。
+
+在 brickKit 自己修好之前，恢复原来的兜底路径：`internal/shell.
+envWithProcessFallback` 与它的回归测试原样恢复；`shell/go-infra` 的
+`component.yaml` 恢复 6 个密钥类 configSchema 项（`appTokenSigningKeyPem`/
+`casdoorAdminPassword`/`webhookSharedSecret`/`dingtalkAppKey`/
+`dingtalkAppSecret`/`dingtalkAgentId`），走顶层 `KEY=${VAR}` 标量赋值
+这条 docker compose 能正确处理的路径（不是嵌在别的字符串里的子串）。
+非密钥类的 config 值（占绝大多数）不受影响，继续走
+`BRICKKIT_SERVED_MEMBERS_CONFIG`——这部分真机验证过是正确的，本节
+只收窄了 Task 0.6 声称的范围，没有推翻整个迁移。三个 Go 外壳的镜像
+版本一并升到 v0.5.1（共用同一份镜像）。真机复核结果见父仓库
+`docs/plans/04b-验证记录.md` Task 0.6。

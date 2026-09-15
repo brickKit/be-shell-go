@@ -294,13 +294,27 @@ func TestRun_单模块Start里panic不崩溃整个进程只隔离在这一个模
 // 完整历史（真实 bug 是怎么被真机复现出来的）留在 README.md，不随代码
 // 一起消失。
 
-// ⚠️ 原来这里有 TestEnvWithProcessFallback_specific优先于进程环境，测的
-// 是阶段四附加 Task 0.4 真机复现出的秘钥类 configSchema 项
-// （appTokenSigningKeyPem 等）：那时 be-ops 手工生成的 SHELL_CONFIG_JSON
-// 会把这类值整条排除，必须靠外壳自己进程环境兜底才能到达需要它的模块。
-// 阶段四附加 Task 0.6（brickKit v0.4.2）起，平台原生的
-// BRICKKIT_SERVED_MEMBERS_CONFIG 用 Go 自己的 encoding/json 正确处理这类
-// 值（不会撑坏 JSON，也不会提交进 git——brickkit.yaml 里仍然是
-// `${VAR}` 占位符，只有运行时注入的这个环境变量里才是展开后的真实值），
-// envWithProcessFallback 函数与这条测试一并删除，兜底机制整个不需要了。
-// 完整历史留在 README.md，不随代码一起消失。
+// TestEnvWithProcessFallback_specific优先于进程环境 覆盖的 bug 在阶段四
+// 附加 Task 0.6 里短暂被认为已经不需要了（当时以为 BRICKKIT_SERVED_
+// MEMBERS_CONFIG 自己用 encoding/json 转义就足够），真机 `brickkit up`
+// 复现出这条判断是错的——问题出在 docker compose 自己对生成好的
+// docker-compose.yaml 做全文本 `${VAR}` 替换，不知道某个 `${VAR}` 恰好
+// 嵌在一段本该是合法 JSON 的字符串内部，真实密钥的原始换行符直接把 JSON
+// 断开（`invalid character '\n' in string literal`，shell-go-infra
+// crash-loop）。这条测试与 envWithProcessFallback 函数一并恢复，完整
+// 根因分析见 envWithProcessFallback 本体注释与 README.md。
+func TestEnvWithProcessFallback_specific优先于进程环境(t *testing.T) {
+	t.Setenv("FAKE_SHELL_LEVEL_SECRET", "来自外壳自己进程环境的值")
+	t.Setenv("PG_SCHEMA", "不该被用到——specific 里有同名 key")
+
+	got := envWithProcessFallback(map[string]string{
+		"PG_SCHEMA": "mdm_customer",
+	})
+
+	if got["FAKE_SHELL_LEVEL_SECRET"] != "来自外壳自己进程环境的值" {
+		t.Fatalf("specific 里没有的 key 应该从外壳自己的进程环境兜底拿到，实际 %+v", got)
+	}
+	if got["PG_SCHEMA"] != "mdm_customer" {
+		t.Fatalf("specific 里已经有的 key 不该被进程环境覆盖，实际 %+v", got)
+	}
+}
