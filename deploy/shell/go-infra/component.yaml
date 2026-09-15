@@ -4,17 +4,17 @@ kind: Component
 metadata:
   id: shell/go-infra
   name: Go 外壳三（infra/integration 基础设施域）
-  version: 0.5.1                     # 同 shell/go-core：直接复用 be-shell-go 这个
+  version: 0.5.2                     # 同 shell/go-core：直接复用 be-shell-go 这个
                                       # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像。
                                       # v0.5.0 曾把 shellConfigJson 与 v0.4.8 新增的 6 个
-                                      # 秘钥类 configSchema 项一并退休，以为 brickKit 原生的
-                                      # BRICKKIT_SERVED_MEMBERS_CONFIG 已经能安全承载这几个
-                                      # 秘钥——真机 `brickkit up` 复现出这个判断是错的：docker
-                                      # compose 自己对生成好的 docker-compose.yaml 做全文本
-                                      # `${VAR}` 替换，会把真实密钥的原始换行符直接拼进本该是
-                                      # 单行 JSON 的字符串里、撑坏 JSON（shell-go-infra
-                                      # crash-loop）。v0.5.1 恢复这 6 项，走
-                                      # internal/shell.envWithProcessFallback 兜底，完整
+                                      # 秘钥类 configSchema 项一并退休；v0.5.1 因为真机复现
+                                      # docker compose 对 ${VAR} 做全文本替换撑坏 JSON 而
+                                      # 短暂恢复过这 6 项，但那次恢复治标不治本（撑坏 JSON 的
+                                      # 是 infra/iam-casdoor 自己那条 config 记录，外壳自己
+                                      # 多存一份不会让它消失）；v0.5.2 找到真正的根治办法——
+                                      # cmd/shell/main.go 新增 sanitizeServedMembersConfig，
+                                      # 在 json.Unmarshal 之前把 JSON 字符串内部被替换进来的
+                                      # 裸控制字符转义回合法形式，这 6 项因此再次删除，完整
                                       # 根因分析见 docs/plans/04b-验证记录.md Task 0.6
   description: 把 infra/authz、infra/iam-casdoor、infra/workflow、infra/notification、integration/im-dingtalk 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
@@ -43,38 +43,10 @@ configSchema:
       type: string
     authzBundleUrl:
       type: string
-    # ⚠️ v0.5.1 恢复（真机复现见上面 metadata.version 的注释）：这 6 项
-    # 是真实的秘钥（PEM 私钥/密码/webhook 共享密钥），本来是
-    # infra/iam-casdoor、integration/im-dingtalk 各自 component.yaml 上
-    # 的 configSchema 项——它们不能像其它 config 项那样单纯依赖
-    # BRICKKIT_SERVED_MEMBERS_CONFIG：brickkit.yaml 里这些值写的是
-    # `${VAR}` 占位符（真实密钥不进 git），docker compose 自己对整份
-    # 生成好的 compose 文件做全文本 `${VAR}` 替换时不知道这个占位符恰好
-    # 嵌在 BRICKKIT_SERVED_MEMBERS_CONFIG 那一整段 JSON 字符串内部，真实
-    # 密钥的原始换行符直接把 JSON 断开。改成外壳自己的独立 configSchema
-    # 项——docker compose 对着一个普通的顶层 `KEY=${VAR}` 标量赋值做替换
-    # 不会有这个问题（不是嵌在别的字符串里的子串）；
-    # internal/shell.envWithProcessFallback 把外壳自己的进程环境
-    # （这些秘钥所在的地方）兜底传给真正需要它们的模块（infra/iam-casdoor
-    # 或 integration/im-dingtalk 各自读自己那几项，两者的 key 名不会互相
-    # 冲突）。这是 BRICKKIT_SERVED_MEMBERS_CONFIG 机制本身的普适性缺口，
-    # 已反馈给 brickKit，见装配仓库 docs/dev/ 对应的反馈文档。
-    appTokenSigningKeyPem:            # → infra/iam-casdoor 自己的同名项
-      type: string
-    casdoorAdminPassword:             # → infra/iam-casdoor 自己的同名项
-      type: string
-    webhookSharedSecret:              # → infra/iam-casdoor 自己的同名项
-      type: string
-    dingtalkAppKey:                   # → integration/im-dingtalk 自己的同名项
-      type: string
-    dingtalkAppSecret:                # → integration/im-dingtalk 自己的同名项
-      type: string
-    dingtalkAgentId:                  # → integration/im-dingtalk 自己的同名项
-      type: string
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.1
+  image: brickenterprise/be-shell-go:0.5.2
   port: 8224                         # registry/ports.tsv，_shell-go-infra 行
   labels:                            # 同 shell/go-core：成员自己的 prometheus.io/port
                                       # 已删掉，合并后指标只走外壳这一个共享端口

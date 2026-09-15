@@ -62,15 +62,19 @@
   ⚠️ 健康检查命令是普通 `wget -q -O /dev/null`，不是 `--spider`——那个坑是
   Python 侧才踩到的（FastAPI 的 `GET /` 不支持 HEAD），但两边的 Dockerfile/
   compose 判据保持一致，不要为了"Go 这边其实没事"就改回 `--spider`。
-- ⚠️ **`BRICKKIT_SERVED_MEMBERS_CONFIG` 只对非密钥类 config 值成立**：
-  密钥类值（`appTokenSigningKeyPem` 等 6 项）真机 `brickkit up` 复现出
-  这份 JSON 会被 docker compose 自己的全文本 `${VAR}` 替换撑坏（原始
-  换行符插进本该是单行 JSON 的字符串里）——`internal/shell.
-  envWithProcessFallback` 与 `shell/go-infra` 的 6 个密钥类
-  configSchema 项因此**没有**退休，继续走"外壳自己 configSchema 项 +
-  进程环境兜底"这条老路，只是非密钥类 config 值改走了平台原生注入。
-  见 `README.md`"Task 0.6 修补"一节，完整根因分析在
-  `envWithProcessFallback` 本体注释里。
+- ⚠️ **`BRICKKIT_SERVED_MEMBERS_CONFIG` 里密钥类的值可能带着裸控制
+  字符**：真机 `brickkit up` 复现出——密钥类 config 值在 `brickkit.yaml`
+  里写的是 `${VAR}` 占位符，docker compose 读取生成好的
+  `docker-compose.yaml` 时会对整份文件按纯文本做 `${VAR}` 替换，不知道
+  某个 `${VAR}` 恰好嵌在这份 JSON 字符串内部，真实密钥（PEM 私钥）自带
+  原始换行符，替换进去会把 JSON 从中间断开。`cmd/shell/main.go` 的
+  `sanitizeServedMembersConfig` 在 `json.Unmarshal` 之前把 JSON 字符串
+  **内部**的裸控制字符转义回合法形式来根治这个问题（不区分是哪个 key，
+  普适性修复）——不是靠"密钥类值另开一条路"这种绕过办法，
+  `envWithProcessFallback` 已经不需要存在。见 `README.md`"Task 0.6"
+  一节的完整时间线，完整根因分析在 `sanitizeServedMembersConfig` 本体
+  注释里。这是 `BRICKKIT_SERVED_MEMBERS_CONFIG` 机制本身的普适性设计
+  缺口，已反馈给 brickKit。
 - 跨外壳的依赖地址（`*_ENDPOINT`）**已经真机触发验证过**（`go-core`/
   `go-backoffice` 跨容器请求 `go-infra` 暴露的 `authzBundleUrl`/`iamJwksUrl`），
   不再是"大概率不会被触发"的推演状态——`docs/design/_调研记录/04-阶段四.md` §4/§12

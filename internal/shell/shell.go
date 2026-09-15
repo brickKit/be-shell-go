@@ -21,7 +21,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -98,61 +97,20 @@ type builtModule struct {
 	mod  *besdk.Module
 }
 
-// envWithProcessFallback 把外壳自己的进程环境（os.Environ()）当一层
-// 兜底，叠加上 specific（这个模块自己的、BRICKKIT_SERVED_MEMBERS_CONFIG
-// 里的 config）——specific 里已经有的 key 优先，兜底层只补 specific
-// 没提供的 key。
-//
-// ⚠️ 阶段四附加 Task 0.6 真机复现的真实 bug（回归的方向跟"BRICKKIT_
-// SERVED_MEMBERS_CONFIG 自己用 encoding/json 转义，不会撑坏 JSON"这个
-// 一开始的直觉相反）：转义在"brickKit 生成 JSON 的那一刻"确实是对的
-// ——问题出在**更后面一步**。secret 类的 config 值在 brickkit.yaml 里
-// 写的是 `${APP_TOKEN_SIGNING_KEY_PEM}` 这样的占位符（真实密钥不进
-// git），brickKit 生成 BRICKKIT_SERVED_MEMBERS_CONFIG 这个 JSON 时，
-// 这个占位符字符串本身没有任何特殊字符，原样编码完全合法。**真正的
-// 展开发生在 docker compose 自己读取生成好的 docker-compose.yaml 时**
-// ——docker compose 对整份文件按纯文本做 `${VAR}` 替换，不知道、也不
-// 关心某个 `${VAR}` 恰好嵌在一段本该是合法 JSON 的字符串内部。真实密钥
-// （比如 appTokenSigningKeyPem 那份 PEM）自带原始换行符，替换进去之后
-// 直接把 JSON 字符串从中间断开——外壳启动时报
-// `解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: invalid character '\n' in
-// string literal`，真机 `brickkit up` 复现过、`shell-go-infra` 因此
-// crash-loop（`docker inspect` 能看到那个环境变量的值在文件里就是
-// 断开的多行文本，不是一整行合法 JSON）。
-//
-// 这跟阶段四附加 Task 0.4 时 be-ops 自己的 `genyaml.MergeConfig` 曾经
-// 踩过的坑是同一类问题（"真实密钥的原始换行符撑坏本该是单行 JSON 的
-// 字符串"），只是这次坑从"我们自己手写的字符串拼接"搬到了"brickKit
-// 生成 JSON + docker compose 自己再做一遍全文本 `${VAR}` 替换"这两步
-// 之间的接缝上——**这不是本项目独有的坑，是 BRICKKIT_SERVED_MEMBERS_
-// CONFIG 这个机制本身在"密钥类配置项还留着 `${VAR}` 占位符"这个场景下
-// 都会踩到的普适性设计缺口**，已经反馈给 brickKit（见装配仓库
-// docs/dev/ 对应的反馈文档）。在 brickKit 自己修好之前，密钥类的 6 个
-// key（appTokenSigningKeyPem/casdoorAdminPassword/webhookSharedSecret/
-// dingtalkAppKey/dingtalkAppSecret/dingtalkAgentId）继续走"外壳自己
-// component.yaml 上的独立 configSchema 项"这条老路——docker compose
-// 对着一个普通的顶层 `KEY=${VAR}` 标量赋值做替换不会有上面的问题（不是
-// 嵌在别的字符串里的子串），本函数就是把这份"外壳自己才有、只有一个
-// 模块真正需要"的数据，兜底传给需要它的那个模块。
-//
-// 安全性：只对本项目已知只会被唯一一个模块使用的 key 有效——如果两个
-// 模块都需要同一个 key 名却要不同的值，兜底到同一份共享环境会重现
-// 十七条第 16 条"最后一个 init 的赢"那一类跨模块污染。目前项目里这几个
-// 秘钥各自只服务一个组件（appTokenSigningKeyPem 只有 infra-iam-casdoor
-// 用，dingtalkAppKey 只有 integration-im-dingtalk 用……），不存在这个
-// 风险；新增秘钥前先确认这条前提仍然成立。
-func envWithProcessFallback(specific map[string]string) map[string]string {
-	out := map[string]string{}
-	for _, kv := range os.Environ() {
-		if key, value, ok := strings.Cut(kv, "="); ok {
-			out[key] = value
-		}
-	}
-	for k, v := range specific {
-		out[k] = v
-	}
-	return out
-}
+// ⚠️ 阶段四附加 Task 0.6 这里曾经短暂恢复过 envWithProcessFallback：
+// 真机 `brickkit up` 第一次复现"docker compose 对 ${VAR} 做全文本替换
+// 撑坏 BRICKKIT_SERVED_MEMBERS_CONFIG 的 JSON"这个 bug 时，第一反应是
+// 照搬阶段四附加 Task 0.4 的老办法（密钥类值改走外壳自己独立的
+// configSchema 项 + 进程环境兜底）——但那个办法治标不治本：真正撑坏
+// JSON 的、infra/iam-casdoor 自己那条 config 记录（brickKit 从它自己的
+// component 配置计算出来、原样塞进 BRICKKIT_SERVED_MEMBERS_CONFIG 数组
+// 里的那一份）根本不会因为"外壳自己另外多存一份"就消失，兜底了个寂寞，
+// 复测同一个 crash 依然在。真正的根因和修复在
+// cmd/shell/main.go 的 sanitizeServedMembersConfig：在 json.Unmarshal
+// 之前，把 JSON 字符串**内部**被替换进来的裸控制字符转义回
+// `\n`/`\r`/`\t`，从源头让这份数据重新变成合法 JSON——不需要再依赖"密钥
+// 类值另开一条路"这种绕过办法，envWithProcessFallback 与 go-infra
+// 那 6 个重复的 configSchema 项因此再次删除，完整过程见 README.md。
 
 // Run 装配整个外壳：Bootstrap 一次 → 开一个共享 DB/NATS → 权限判定装配
 // 一次 → 逐个模块调 New 拿 *besdk.Module → 按 cfg.Modules 的顺序逐个跑
@@ -189,7 +147,7 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		rt := besdk.NewShellRuntime(besdk.ShellModuleConfig{
 			ComponentID:      m.ComponentID,
 			ComponentVersion: m.ComponentVersion,
-			Env:              envWithProcessFallback(m.Env),
+			Env:              m.Env,
 			HTTPPort:         m.HTTPPort,
 			ExtraPorts:       m.ExtraPorts,
 		}, db, nc)

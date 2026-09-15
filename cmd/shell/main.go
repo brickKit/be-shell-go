@@ -158,7 +158,7 @@ func buildModules() ([]shell.ModuleSpec, error) {
 	}
 
 	var members []servedMemberConfig
-	if err := json.Unmarshal([]byte(raw), &members); err != nil {
+	if err := json.Unmarshal([]byte(sanitizeServedMembersConfig(raw)), &members); err != nil {
 		return nil, fmt.Errorf("解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: %w", err)
 	}
 
@@ -201,6 +201,62 @@ func buildModules() ([]shell.ModuleSpec, error) {
 		})
 	}
 	return specs, nil
+}
+
+// sanitizeServedMembersConfig 修复 docker compose 自己对 ${VAR} 做全文本
+// 替换时、在 JSON 字符串内部留下的原始控制字符——真机 `brickkit up`
+// 复现出：brickKit 生成 BRICKKIT_SERVED_MEMBERS_CONFIG 这份 JSON 的那一刻，
+// Go 自己的 encoding/json 保证字符串内部不会有任何未转义的控制字符（换行
+// 会被正确编码成两个字符的 `\n`）；但密钥类 config 值在 brickkit.yaml 里
+// 写的是 `${VAR}` 占位符，docker compose 读取生成好的 docker-compose.yaml
+// 时会对整份文件按纯文本做 `${VAR}` 替换，不知道也不关心某个 `${VAR}`
+// 恰好嵌在这份 JSON 字符串内部——真实密钥（比如 appTokenSigningKeyPem
+// 那份 PEM）自带原始换行符，替换进去就在"合法 JSON 字符串内部绝不会自己
+// 出现"的位置制造出裸控制字符。
+//
+// ⚠️ 只转义**字符串内部**的控制字符，不能不分场合整段替换——字符串外部
+// 的裸换行/空白本来就是合法 JSON（比如手写测试数据为了可读性跨行），
+// 把那些也转义反而会把"合法的格式化空白"变成"字符串外面出现的非法转义
+// 序列"，弄巧成拙。用一个只关心"现在在不在字符串里面"的最小状态机
+// （遇到未转义的 `"` 切换状态，`\\` 时跳过下一个字符防止误判转义序列）
+// 来分辨，不需要理解 JSON 的其余语法。
+func sanitizeServedMembersConfig(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	inString := false
+	runes := []rune(raw)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if inString && r == '\\' && i+1 < len(runes) {
+			// 转义序列（`\"`、`\\`、`\n` 字面两字符……）原样透传两个 rune，
+			// 不当成需要处理的裸控制字符，也不能让下一个字符误触发
+			// "遇到 `"` 切换字符串状态"。
+			b.WriteRune(r)
+			i++
+			b.WriteRune(runes[i])
+			continue
+		}
+		if r == '"' {
+			inString = !inString
+			b.WriteRune(r)
+			continue
+		}
+		if inString {
+			switch r {
+			case '\n':
+				b.WriteString(`\n`)
+				continue
+			case '\r':
+				b.WriteString(`\r`)
+				continue
+			case '\t':
+				b.WriteString(`\t`)
+				continue
+			}
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // configEnvVarName 把一个原始 configSchema 驼峰 key 转成

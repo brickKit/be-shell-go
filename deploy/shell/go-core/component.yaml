@@ -9,18 +9,18 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.5.1                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.5.2                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.5.0：brickKit v0.4.2 起
                                       # 原生支持 BRICKKIT_SERVED_MEMBERS_CONFIG，
                                       # shellConfigJson 这个手工维护的 configSchema 项
-                                      # 整个退休；v0.5.1：真机复现 BRICKKIT_SERVED_MEMBERS_
-                                      # CONFIG 承载密钥类值时会被 docker compose 自己的
-                                      # `${VAR}` 全文本替换撑坏 JSON（只影响 shell/go-infra，
-                                      # 三个 Go 外壳共用同一份镜像所以一起升版本），完整
-                                      # 根因见 shell/go-infra 的 configSchema 注释与
-                                      # docs/plans/04b-验证记录.md Task 0.6
+                                      # 整个退休；v0.5.1/v0.5.2：真机复现 + 根治 docker
+                                      # compose 对 ${VAR} 做全文本替换撑坏 BRICKKIT_SERVED_
+                                      # MEMBERS_CONFIG 的 JSON 这个 bug（只影响
+                                      # shell/go-infra，三个 Go 外壳共用同一份镜像所以一起
+                                      # 升版本），完整根因见 shell/go-infra 的 configSchema
+                                      # 注释与 docs/plans/04b-验证记录.md Task 0.6
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -64,7 +64,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.1
+  image: brickenterprise/be-shell-go:0.5.2
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见
