@@ -21,7 +21,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -98,43 +97,6 @@ type builtModule struct {
 	mod  *besdk.Module
 }
 
-// envWithProcessFallback 把外壳自己的进程环境（os.Environ()）当一层
-// 兜底，叠加上 specific（这个模块自己的、be-ops shell-config 产出的
-// Config）——specific 里已经有的 key 优先，兜底层只补 specific 没提供
-// 的 key。
-//
-// 存在的理由：`genyaml.MergeConfig`（be-ops 侧）会把整个值是
-// `${VAR}` 占位符的 configSchema 项（apptokenSigningKeyPem、
-// casdoorAdminPassword、webhookSharedSecret、dingtalkAppKey/Secret/
-// AgentId 这 6 个真实存在的秘钥）整条排除，不让它们进
-// SHELL_CONFIG_JSON——真机测过，这类值要么带着真实换行符会破坏 JSON
-// 结构，要么展开后的真实密钥会被提交进 git（阶段四附加 Task 0.4，
-// genyaml.MergeConfig 的注释有完整推演）。这些秘钥因此改成外壳自己
-// component.yaml 上的独立 configSchema 项（`shell/go-infra` 的
-// appTokenSigningKeyPem 等），brickKit 原生的注入引擎会把它们展开成
-// 外壳容器**自己**的进程环境变量（干净的 YAML 标量值，不是塞在别的
-// 字符串里的子串，不会有上面两个问题）——本函数就是把这份"外壳自己
-// 才有、只有一个模块真正需要"的数据，兜底传给需要它的那个模块。
-//
-// 安全性：只对本项目已知只会被唯一一个模块使用的 key 有效——如果两个
-// 模块都需要同一个 key 名却要不同的值，兜底到同一份共享环境会重现
-// 十七条第 16 条"最后一个 init 的赢"那一类跨模块污染。目前项目里这几个
-// 秘钥各自只服务一个组件（appTokenSigningKeyPem 只有 infra-iam-casdoor
-// 用，dingtalkAppKey 只有 integration-im-dingtalk 用……），不存在这个
-// 风险；新增秘钥前先确认这条前提仍然成立。
-func envWithProcessFallback(specific map[string]string) map[string]string {
-	out := map[string]string{}
-	for _, kv := range os.Environ() {
-		if key, value, ok := strings.Cut(kv, "="); ok {
-			out[key] = value
-		}
-	}
-	for k, v := range specific {
-		out[k] = v
-	}
-	return out
-}
-
 // Run 装配整个外壳：Bootstrap 一次 → 开一个共享 DB/NATS → 权限判定装配
 // 一次 → 逐个模块调 New 拿 *besdk.Module → 按 cfg.Modules 的顺序逐个跑
 // 迁移 → 用 errgroup 一起 Listen → 任一失败或 ctx 取消，全部优雅退出。
@@ -167,10 +129,21 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 
 	built := make([]builtModule, 0, len(cfg.Modules))
 	for _, m := range cfg.Modules {
+		// ⚠️ 阶段四附加 Task 0.6（brickKit v0.4.2）：Env 直接用 m.Env，不再
+		// 需要一层"外壳自己进程环境兜底"——旧版这里曾经因为 be-ops 手工
+		// 生成的 SHELL_CONFIG_JSON 会把整个值是 `${VAR}` 占位符的密钥类
+		// 配置项（appTokenSigningKeyPem 等 6 项）整条排除（真机测过：带
+		// 原始换行符的 PEM 值直接拼进 JSON 字符串会撑坏 JSON），需要一层
+		// 兜底从外壳自己的进程环境把这几个值补回来。brickKit 原生的
+		// BRICKKIT_SERVED_MEMBERS_CONFIG 用 Go 自己的 encoding/json 正确
+		// 转义这类值（不会撑坏 JSON），每个成员自己的 config 里已经带着
+		// 完整的、真实解析过的密钥值——cmd/shell/main.go 的 buildModules
+		// 直接从这份数据里取，不再有"这几个 key 被排除"这回事，也就不需要
+		// 兜底层了。
 		rt := besdk.NewShellRuntime(besdk.ShellModuleConfig{
 			ComponentID:      m.ComponentID,
 			ComponentVersion: m.ComponentVersion,
-			Env:              envWithProcessFallback(m.Env),
+			Env:              m.Env,
 			HTTPPort:         m.HTTPPort,
 			ExtraPorts:       m.ExtraPorts,
 		}, db, nc)

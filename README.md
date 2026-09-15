@@ -22,20 +22,21 @@ HTTP/gRPC 端口。设计动机、七条铁律、代价见父仓库《BrickEnter
   用测试现生成的真实 RSA 密钥；`integration-im-dingtalk` 用 `.env` 里真实的
   钉钉凭据（New/Start 全程零网络调用，不会真的联系钉钉服务器，见测试文件顶部
   注释）。
-- `cmd/shell`：进程入口，已经接上 `be-ops` 产出 4——`SHELL_CONFIG_JSON`
-  环境变量的内容直接是这一个外壳自己的 `modules` 数组（`be-ops
-  shell-config --shell <name>` 打印出来的那一行，阶段四附加 Task 0.4起，
-  见下方"现状补充"：servedBy 外壳没有 volumes 可以挂载文件，只能把内容
-  本身当一个 configSchema 字符串写进 `brickkit.yaml`），再按平台原生
-  注入的 `BRICKKIT_SERVED_MEMBERS` 筛出这次真的被 `servedBy` 收编、
-  活着的成员；`moduleRegistry` 是本仓库唯一"componentId 字符串 → 真实
-  Go 源码 import"的静态映射（数据驱动配置，代码驱动装配，
-  `ModuleSpec.New` 不能从数据文件动态加载，见 `internal/shell.ModuleSpec`
-  的既有注释）。`cmd/shell/main_test.go` 用手写夹具覆盖了"解析
-  `SHELL_CONFIG_JSON`"/"按 `BRICKKIT_SERVED_MEMBERS` 筛成员的几种状态
-  （未设置报错/空字符串零模块/部分列出只装那几个/列出了找不到的成员
-  报错）"/"JSON 格式不对报错"/"11 个真实组件都在 moduleRegistry 里"
-  六类断言，不需要真实基础设施。
+- `cmd/shell`：进程入口，读平台原生注入的 `BRICKKIT_SERVED_MEMBERS_CONFIG`
+  （brickKit v0.4.2 起，阶段四附加 Task 0.6，见下方"现状补充"）——一个
+  JSON 数组，每个元素是这次真的被这个外壳收编的成员，含
+  `componentId`/`version`/`httpPort`/`extraPorts`/合并后的 `config`
+  （`config` 键是原始 configSchema 驼峰 key，`configEnvVarName` 转成
+  `SCREAMING_SNAKE_CASE` 才能被 `besdk.Config` 正确查到）；这份数据本身
+  就已经是"这次真的收编了谁"，不需要再单独按另一个变量筛一遍。
+  `moduleRegistry` 是本仓库唯一"componentId 字符串 → 真实 Go 源码
+  import"的静态映射（数据驱动配置，代码驱动装配，`ModuleSpec.New` 不能
+  从数据文件动态加载，见 `internal/shell.ModuleSpec` 的既有注释）。
+  `cmd/shell/main_test.go` 用手写夹具覆盖了"解析真实数据形状装配模块"/
+  "零成员时装出零模块"/"变量未设置报错"/"JSON 格式不对报错"/"成员在
+  moduleRegistry 里找不到报错"/"缺 pgSchema 报错"/"11 个真实组件都在
+  moduleRegistry 里"/"config 键名转换算法跟 brickKit 一致"八类断言，
+  不需要真实基础设施。
 - **真机部署验证（阶段四 Task 6 最后一步，2026-09-13 完成）**：`docker build`
   出的镜像，用同一份镜像分别起了 `shell-go-core`/`shell-go-backoffice`/
   `shell-go-infra` 三个真实容器，`brickkit.yaml` 也真的原子式切换成
@@ -224,3 +225,43 @@ schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只�
 完整任务清单见 `docs/plans/04-阶段四-做外壳验拆回.md`；本地开发时可以自己建一份
 `go.work`（`use ( . ../../tools/be-sdk-go )`）联调 `be-sdk-go` 未发布的改动，
 不要提交它——`Dockerfile` 的最终构建只依赖 `go.mod`/`go.sum` 锁定的已发布版本。
+
+## 现状补充（阶段四附加 Task 0.6 完成，2026-09-15）——`SHELL_CONFIG_JSON` + `be-ops shell-config` 整体退休
+
+`SHELL_CONFIG_JSON`（上面 Task 0.4 那次改动，"手工生成内容、贴进
+`configSchema` 字符串"那套机制）有一个真实、反复复发的失败模式：
+`brickkit.yaml` 一改哪个成员的版本号/config 值/`servedBy` 归属，这份
+手工维护的数据就会过期——平台不报错，只在外壳真机启动时才炸（要么
+装错模块，要么直接 crash-loop，这次真机迁移复发了两次）。这个坑连同
+另一个"验证组件独立启动能力只能靠自己写脚本改 `brickkit.yaml` 再
+`git checkout` 恢复"的摩擦点，写成两份架构提案反馈给了 brickKit（见
+父仓库 `docs/dev/架构复盘-servedBy落地后的自有改进空间.md`），
+**brickKit v0.4.2 完整采纳并实现**：
+
+- 新增保留变量 `BRICKKIT_SERVED_MEMBERS_CONFIG`——在算
+  `BRICKKIT_SERVED_MEMBERS` 的同一处代码里，brickKit 自己顺手就已经
+  拿到了每个成员的完整 Manifest 和合并后的 config（`inject.Build` 对
+  每个运行中的组件无差别都算过一遍），现在直接打包成 JSON 数组原生
+  注入，不再需要我们自己起一个命令行工具算一遍。刻意不含
+  `configSchema` 本身（不会过期，带上纯粹增加负载）和资源连接变量
+  （`DATABASE_*` 类，可能标了密钥身份，该走 K8s Secret）。
+- 新增 `brickkit up --ignore-served-by`（父仓库 `Makefile` 的
+  `teardown-up`/`teardown-down` 已经改用它，见父仓库
+  `docs/plans/04b-验证记录.md` Task 0.6，不是本仓库的事）。
+
+本仓库这边的改动：`cmd/shell/main.go` 改成直接解析
+`BRICKKIT_SERVED_MEMBERS_CONFIG`（不再需要单独按
+`BRICKKIT_SERVED_MEMBERS` 筛一遍——这份新变量本身就已经是"这次真的
+收编了谁"），补一个 `configEnvVarName` 把原始驼峰 key 转成
+`SCREAMING_SNAKE_CASE`（brickKit 刻意不做这一步转换，交给外壳实现者
+自己处理）；`internal/shell.envWithProcessFallback`（Task 0.4 为了给
+6 个密钥类配置项兜底而加的"外壳自己进程环境当兜底层"）整个删除——
+`BRICKKIT_SERVED_MEMBERS_CONFIG` 用 Go 自己的 `encoding/json` 正确
+处理带原始换行符的 PEM 值（不会撑坏 JSON），每个成员自己的 config
+里已经带着完整、真实解析过的密钥值，不再需要这层兜底。
+
+4 个外壳的 `component.yaml` 也删掉了 `shellConfigJson`
+（以及 `go-infra` Task 0.4 新增的 6 个秘钥类 configSchema 项）——
+`be-ops shell-config` 子命令、`SHELL_CONFIG_JSON`/密钥兜底机制两条线
+都已经没有存在的理由。真机复核结果见父仓库
+`docs/plans/04b-验证记录.md` Task 0.6。

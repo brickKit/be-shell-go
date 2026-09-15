@@ -5,35 +5,33 @@
 // 04 §12 的既定结论："部署几份实例纯粹是运行时配置问题"，internal/shell.Run
 // 本来就接受任意 Modules 子集，不需要为每个外壳单独建一份镜像/仓库）。
 //
-// 哪些模块属于这个外壳、端口/schema/configSchema 值，全部来自 be-ops
-// 产出 4（`be-ops shell-config --shell <name>` 打印出的这一个外壳自己
-// 的 modules 数组）——这里负责两件事：①按 BRICKKIT_SERVED_MEMBERS（平台
-// 原生注入，servedBy 场景下"这次真的被收编、活着"的成员清单）筛一遍，
-// 只装真的被收编的那些——SHELL_CONFIG_JSON 里列出的是"这个外壳理论上
-// 有哪些成员"，不等于"这次部署真的都被收编了"（一个成员可能还没切成
-// servedBy、或者被临时摘掉）；②把数据里的 componentId 字符串映到真实的
-// Go 源码 import（这一步不能数据驱动，ModuleSpec.New 必须是静态 import，
-// 见 internal/shell.ModuleSpec 的字段注释）。除此之外不做任何装配决策——
-// 哪个组件该不该合并、合并成几个外壳，那是 assembly.yaml/registry/
-// schemas.tsv 的既定数据，不是这个文件该决定的。
+// ⚠️ 阶段四附加 Task 0.6（brickKit v0.4.2）：哪些模块属于这个外壳、
+// 端口/config 值，现在全部来自平台原生注入的 BRICKKIT_SERVED_MEMBERS_CONFIG
+// ——一个 JSON 数组，每个元素是当前这次部署里真的被这个外壳收编的一个
+// 成员（componentId/version/httpPort/extraPorts/合并后的 config，config
+// 键是原始 configSchema 驼峰 key，不是转换后的环境变量名）。这条数据
+// brickKit 自己在算 BRICKKIT_SERVED_MEMBERS 的同一处代码里就已经算好，
+// 直接原生注入外壳容器——取代了此前 be-ops shell-config 命令手工生成、
+// 手工贴进 brickkit.yaml 该外壳组件 config.shellConfigJson 字符串配置项
+// 那一整套机制（那套机制的已知缺陷：brickkit.yaml 一改版本号/config/
+// servedBy 归属就会过期，平台不报错，只在外壳真机启动时才炸——这正是
+// 反馈给 brickKit、促成这次原生支持的真实动机，见装配仓库
+// docs/dev/架构复盘-servedBy落地后的自有改进空间.md）。
 //
-// ⚠️ 阶段四附加 Task 0.2/0.3：原来还要读产出 7（shell-env.json）做依赖
-// 地址改写 + 导出到进程环境（internal/shell.exportDependencyEndpoints）
-// ——servedBy 落地后这两步都不需要了：brickKit 自己在生成阶段就把
-// *_ENDPOINT 类变量直接合并进外壳容器自己的 os.Environ()，这个进程一
-// 启动就已经看得见，不需要本文件/internal/shell 再做任何搬运。完整
-// 调研过程见装配仓库 docs/plans/04b-验证记录.md Task 0.2。
+// 这个文件现在只负责两件事：①把 BRICKKIT_SERVED_MEMBERS_CONFIG 里每个
+// 成员的 config 键从原始驼峰形式转成 besdk.Config 内部查找用的
+// SCREAMING_SNAKE_CASE（brickKit 自己不做这一步转换，交给外壳实现者，
+// 见 shell-implementers-guide 的原文说明——转换算法与 brickKit 自己的
+// internal/inject.EnvVarName 逐字对应）；②把数据里的 componentId 字符串
+// 映到真实的 Go 源码 import（这一步不能数据驱动，ModuleSpec.New 必须是
+// 静态 import，见 internal/shell.ModuleSpec 的字段注释）。除此之外不做
+// 任何装配决策——哪个组件该不该合并、合并成几个外壳，那是
+// assembly.yaml/registry/schemas.tsv 的既定数据，不是这个文件该决定的。
 //
-// ⚠️ 阶段四附加 Task 0.4：SHELL_CONFIG_JSON 从"文件路径"改成了"内容本身"
-// ——servedBy 外壳没有自己的 component.yaml 之外的任何东西可以挂载
-// （brickKit 的 manifest 模型没有 volumes 字段），"文件路径 + 挂载卷"这
-// 条路在没有 volumes 的世界里走不通。现在 SHELL_CONFIG_JSON 的值直接是
-// `be-ops shell-config --shell <name>` 打印出的、这一个外壳自己的
-// modules 数组（compact JSON），跟 infra/authz 的 permissionCatalog 是
-// 同一种模式——一段生成的字符串，写死在 brickkit.yaml 该外壳组件的
-// config.shellConfigJson 里，源头数据变了就重新跑一次那条命令、手动贴
-// 回去。也因此不再需要"按 SHELL_NAME 从多个外壳里挑一个"这一步——
-// 这个环境变量的内容从生成的那一刻起就已经只属于这一个外壳。
+// ⚠️ 阶段四附加 Task 0.2/0.3：依赖地址（*_ENDPOINT）由 brickKit 自己在
+// 生成阶段直接合并进外壳容器自己的 os.Environ()，这个进程一启动就已经
+// 看得见，不需要本文件/internal/shell 再做任何搬运。完整调研过程见
+// 装配仓库 docs/plans/04b-验证记录.md Task 0.2。
 package main
 
 import (
@@ -43,10 +41,10 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
 
 	besdk "github.com/brickKit/be-sdk-go"
 	"github.com/brickKit/be-shell-go/internal/shell"
@@ -68,11 +66,12 @@ import (
 type moduleCtor func(context.Context, *besdk.Runtime) (*besdk.Module, error)
 
 // moduleRegistry 是本仓库唯一"数据 componentId 字符串 → 真实 Go 代码"
-// 的静态映射——be-ops 产出 4/7 只携带 componentId 这一个字符串，具体
-// New 是哪个包的哪个函数，只能在源码里写死（同 internal/shell.ModuleSpec
-// 的既有注释）。全部 11 个真实组件的 New 都注册在这里，不分外壳——
-// 三个外壳实例共用同一份镜像/同一个二进制，实际装哪几个由 shell-config
-// 数据在运行时决定，源码这一层不需要（也不应该）知道"这次是哪个外壳"。
+// 的静态映射——BRICKKIT_SERVED_MEMBERS_CONFIG 只携带 componentId 这一个
+// 字符串，具体 New 是哪个包的哪个函数，只能在源码里写死（同
+// internal/shell.ModuleSpec 的既有注释）。全部 11 个真实组件的 New 都
+// 注册在这里，不分外壳——三个外壳实例共用同一份镜像/同一个二进制，实际
+// 装哪几个由平台注入的数据在运行时决定，源码这一层不需要（也不应该）
+// 知道"这次是哪个外壳"。
 var moduleRegistry = map[string]moduleCtor{
 	"crm/opportunity":         crmopportunity.New,
 	"erp/finance":             erpfinance.New,
@@ -87,24 +86,23 @@ var moduleRegistry = map[string]moduleCtor{
 	"mdm/product":             mdmproduct.New,
 }
 
-// shellConfigModule 是 be-ops 产出 4（`shell-config --shell <name>` 打印
-// 出的这一个外壳自己的 modules 数组）里一条的形状——字段名与
-// tools/be-ops/internal/shellconfig.Module 逐一对应。两个仓库是两个
-// 独立的 Go module，`internal/` 的可见性规则不允许直接 import 那边的
-// 类型，这里按 JSON 字段名重新声明一份，耦合点是数据形状，不是 Go 类型
-// （同 be-ops genyaml 包文档："自己另算的那份，早晚和平台的算法分叉"这
-// 条判据反过来也成立：约定数据格式，而不是共享代码，才不会跨仓库耦合
-// 出一条隐藏的编译期依赖）。
-type shellConfigModule struct {
-	ComponentID string         `json:"componentId"`
-	Version     string         `json:"version"`
-	Schema      string         `json:"schema"`
-	HTTPPort    int            `json:"httpPort"`
-	ExtraPorts  map[string]int `json:"extraPorts,omitempty"`
-	// Config 是这个模块自己的 configSchema 解析结果（component.yaml 的
-	// default 与 brickkit.yaml 的 config: 字面量已经合并好），阶段四
-	// 附加 Task 0.2 起取代了原来单独一份 shell-env.json 的 Env 字段。
-	Config map[string]string `json:"config,omitempty"`
+// servedMemberConfig 是 BRICKKIT_SERVED_MEMBERS_CONFIG 数组里一条的
+// 形状——字段名与 brickKit 源码 internal/shell（`shell-implementers-guide`
+// 文档里公开承诺的契约）逐一对应。零个成员时这个变量的值是 `[]`，不是
+// 变量缺失（brickKit 自己的既定行为，本文件不需要对"变量不存在"这种
+// 情况做特殊处理——见下面 buildModules 里唯一的错误分支）。
+type servedMemberConfig struct {
+	ComponentID string `json:"componentId"`
+	Version     string `json:"version"`
+	HTTPPort    int    `json:"httpPort"`
+	ExtraPorts  []struct {
+		Name string `json:"name"`
+		Port int    `json:"port"`
+	} `json:"extraPorts"`
+	// Config 是这个模块自己合并后的配置——键是原始 configSchema 驼峰
+	// key（brickKit 刻意不做大写下划线转换，交给外壳实现者自己处理，
+	// 见 shell-implementers-guide 原文）。
+	Config map[string]string `json:"config"`
 }
 
 func main() {
@@ -127,10 +125,8 @@ func main() {
 	}
 
 	// ⚠️ SHELL_HEALTH_PORT 不是平台注入的（外壳根本不是 brickKit
-	// 组件）——be-ops 产出 8（shell-compose.yml）生成时会把这个端口
-	// 写进 healthcheck 配置，同时把同一个值以这个变量名注入外壳容器，
-	// 这里只负责读、不负责决定这个端口该是多少。产出 8 落地前先给一个
-	// 明显不常用的默认值，方便本地手动验证骨架。
+	// 组件）——外壳自己的 component.yaml 声明这个端口，值写在 brickkit.yaml
+	// 该外壳组件的 config 块里，这里只负责读、不负责决定这个端口该是多少。
 	healthPort, _ := strconv.Atoi(os.Getenv("SHELL_HEALTH_PORT"))
 	if healthPort == 0 {
 		healthPort = 18888
@@ -152,99 +148,83 @@ func main() {
 	}
 }
 
-// buildModules 解析 SHELL_CONFIG_JSON（产出 4，`be-ops shell-config
-// --shell <name>` 打印出的内容，这一个外壳自己的 modules 数组），再按
-// BRICKKIT_SERVED_MEMBERS 筛出这次真的被收编、活着的成员，拼出真实的
-// []shell.ModuleSpec。
+// buildModules 解析 BRICKKIT_SERVED_MEMBERS_CONFIG（平台原生注入，这次
+// 部署里真的被这个外壳收编的成员列表，含每个成员完整的装配数据），拼出
+// 真实的 []shell.ModuleSpec。
 func buildModules() ([]shell.ModuleSpec, error) {
-	raw, ok := os.LookupEnv("SHELL_CONFIG_JSON")
-	if !ok || raw == "" {
-		return nil, fmt.Errorf("SHELL_CONFIG_JSON 未设置（be-ops shell-config --shell <name> 的产出，应该是这个外壳自己的 modules 数组）")
-	}
-	served, err := servedMemberSet()
-	if err != nil {
-		return nil, err
+	raw, ok := os.LookupEnv("BRICKKIT_SERVED_MEMBERS_CONFIG")
+	if !ok {
+		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS_CONFIG 未设置——这个容器看起来不是被 servedBy 正常收编启动的（平台总会至少注入一个 [] 空数组），检查是不是手动 docker run 漏传了这个变量")
 	}
 
-	var modules []shellConfigModule
-	if err := json.Unmarshal([]byte(raw), &modules); err != nil {
-		return nil, fmt.Errorf("解析 SHELL_CONFIG_JSON 失败: %w", err)
+	var members []servedMemberConfig
+	if err := json.Unmarshal([]byte(raw), &members); err != nil {
+		return nil, fmt.Errorf("解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: %w", err)
 	}
 
-	// SHELL_CONFIG_JSON 里的模块顺序已经是 be-ops 按依赖关系拓扑排序过的
-	// 结果（tools/be-ops/internal/shellconfig 的既有职责），这里原样保留
-	// 顺序传给 shell.Run——迁移与启动顺序由这个顺序决定，本文件不重新排序。
-	matched := make(map[string]bool, len(served))
-	specs := make([]shell.ModuleSpec, 0, len(modules))
-	for _, m := range modules {
-		name := versionedServiceName(m.ComponentID, m.Version)
-		if !served[name] {
-			// shell-config.json 列的是"这个外壳理论上有哪些成员"，不是
-			// "这次都被收编了"——没在 BRICKKIT_SERVED_MEMBERS 里的成员
-			// 这次没被平台收编（还没切成 servedBy，或者被临时摘掉），
-			// 正常跳过，不是错误。
-			continue
-		}
-		matched[name] = true
+	// 数组顺序就是 brickKit 自己在 brickkit.yaml 里声明 servedBy 时的
+	// 成员顺序，这里原样保留传给 shell.Run——迁移与启动顺序由这个顺序
+	// 决定，本文件不重新排序。
+	specs := make([]shell.ModuleSpec, 0, len(members))
+	for _, m := range members {
 		ctor, ok := moduleRegistry[m.ComponentID]
 		if !ok {
-			return nil, fmt.Errorf("组件 %s 在 SHELL_CONFIG_JSON 里，但 moduleRegistry 没有登记它的真实 New 函数——是不是漏了给它加 import", m.ComponentID)
+			return nil, fmt.Errorf("组件 %s 在 BRICKKIT_SERVED_MEMBERS_CONFIG 里，但 moduleRegistry 没有登记它的真实 New 函数——是不是漏了给它加 import", m.ComponentID)
 		}
+
+		// pgSchema 要在转换成 SCREAMING_SNAKE_CASE 之前，按原始驼峰 key
+		// 取——它是每个组件都有的既定配置项（registry/schemas.tsv 的值），
+		// 不是可选字段。
+		schema := m.Config["pgSchema"]
+		if schema == "" {
+			return nil, fmt.Errorf("组件 %s 的 config 里没有 pgSchema——BRICKKIT_SERVED_MEMBERS_CONFIG 的数据看起来不完整", m.ComponentID)
+		}
+
+		env := make(map[string]string, len(m.Config))
+		for key, value := range m.Config {
+			env[configEnvVarName(key)] = value
+		}
+
+		extraPorts := make(map[string]int, len(m.ExtraPorts))
+		for _, p := range m.ExtraPorts {
+			extraPorts[p.Name] = p.Port
+		}
+
 		specs = append(specs, shell.ModuleSpec{
 			ComponentID:      m.ComponentID,
 			ComponentVersion: m.Version,
-			Env:              m.Config,
+			Env:              env,
 			HTTPPort:         m.HTTPPort,
-			ExtraPorts:       m.ExtraPorts,
-			Schema:           m.Schema,
+			ExtraPorts:       extraPorts,
+			Schema:           schema,
 			New:              ctor,
 		})
-	}
-
-	if len(matched) != len(served) {
-		var missing []string
-		for name := range served {
-			if !matched[name] {
-				missing = append(missing, name)
-			}
-		}
-		sort.Strings(missing)
-		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 里有 SHELL_CONFIG_JSON 找不到的成员：%v（是不是 brickkit.yaml 改完之后忘了重新跑 be-ops shell-config --shell 把新的字符串贴回 config.shellConfigJson）", missing)
 	}
 	return specs, nil
 }
 
-// servedMemberSet 读 BRICKKIT_SERVED_MEMBERS（平台原生注入，servedBy
-// 外壳"这次真的被收编、活着"的成员清单，逗号分隔的版本化服务名）。
-//
-// ⚠️ 必须用 os.LookupEnv 而不是 os.Getenv：这个变量"不存在"和"存在但是
-// 空字符串"是两种不同的状态，语义完全不同——不存在意味着这个容器可能
-// 根本不是被 servedBy 正常收编启动的（平台总会至少注入一个空字符串，
-// 真的读不到通常说明是手动 docker run 忘了传，必须报错，不能悄悄退化成
-// "全部实例化"这类旧行为，那会掩盖真实的配置错误）；空字符串是合法状态，
-// 意味着这次没有任何成员被收编（都还没切换、或者都被临时摘掉了），
-// 应该装出 0 个模块，而不是报错。
-func servedMemberSet() (map[string]bool, error) {
-	raw, ok := os.LookupEnv("BRICKKIT_SERVED_MEMBERS")
-	if !ok {
-		return nil, fmt.Errorf("BRICKKIT_SERVED_MEMBERS 未设置——这个容器看起来不是被 servedBy 正常收编启动的（平台总会至少注入一个空字符串），检查是不是手动 docker run 漏传了这个变量")
+// configEnvVarName 把一个原始 configSchema 驼峰 key 转成
+// SCREAMING_SNAKE_CASE——跟 besdk.Config 内部查找配置项时用的转换规则
+// （camelCase → 大写下划线）逐字对应，也是 brickKit 自己
+// internal/inject.EnvVarName 的算法，这里原样复刻（brickKit 刻意不在
+// BRICKKIT_SERVED_MEMBERS_CONFIG 里做这一步转换，交给外壳实现者自己
+// 处理，见 shell-implementers-guide 原文："config 键是原始 configSchema
+// key，不是转换后的环境变量名"）。
+func configEnvVarName(key string) string {
+	var b strings.Builder
+	runes := []rune(key)
+	for i, r := range runes {
+		switch {
+		case r == '-' || r == '.' || r == ' ':
+			b.WriteRune('_')
+		case unicode.IsUpper(r):
+			if i > 0 && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1])) {
+				b.WriteRune('_')
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteRune(unicode.ToUpper(r))
+		}
 	}
-	set := map[string]bool{}
-	if raw == "" {
-		return set, nil
-	}
-	for _, name := range strings.Split(raw, ",") {
-		set[strings.TrimSpace(name)] = true
-	}
-	return set, nil
+	return b.String()
 }
-
-// versionedServiceName 与 brickKit 自己推导服务名的算法逐字对应
-// （总纲 §2.1："/ → -、. → -、全部小写，再接精确版本号"）——
-// "mdm/customer"@"1.0.7" → "mdm-customer-1-0-7"，跟
-// BRICKKIT_SERVED_MEMBERS 里的写法逐字一致。
-func versionedServiceName(id, version string) string {
-	s := strings.NewReplacer("/", "-", ".", "-").Replace(id + "-" + version)
-	return strings.ToLower(s)
-}
-
