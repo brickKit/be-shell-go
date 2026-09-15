@@ -9,7 +9,7 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.4.7                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.4.8                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.4.7：SHELL_CONFIG_JSON
@@ -69,7 +69,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.4.7
+  image: brickenterprise/be-shell-go:0.4.8
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见
