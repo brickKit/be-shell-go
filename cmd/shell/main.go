@@ -176,9 +176,17 @@ func buildModules() ([]shell.ModuleSpec, error) {
 		return nil, fmt.Errorf("解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: %w", err)
 	}
 
-	// 数组顺序就是 brickKit 自己在 brickkit.yaml 里声明 servedBy 时的
-	// 成员顺序，这里原样保留传给 shell.Run——迁移与启动顺序由这个顺序
-	// 决定，本文件不重新排序。
+	// ⚠️ 数组顺序不是 brickkit.yaml 里声明 servedBy 的顺序，也不是任何
+	// 拓扑序——brickKit 自己按 componentId 字典序排过一遍
+	// （internal/shell.Group.ServedMembersConfig 的 sort.Slice，真机
+	// `docker exec` 核对过：go-core 的声明顺序是 mdm/customer→mdm/
+	// product→erp/inventory→erp/finance→erp/sales，生成的数组顺序是
+	// erp/finance→erp/inventory→erp/sales→mdm/customer→mdm/product）。
+	// 这里原样保留传给 shell.Run，不重新排序——迁移按这个字典序顺序跑，
+	// 依赖 shell.Run 靠 SET LOCAL search_path 天然的 schema 隔离，不靠
+	// 迁移顺序本身（设计书禁止跨 schema 外键，见 §11.2.3），字典序对
+	// 正确性无影响，只是"哪个模块的迁移先跑"这件事不受我们控制，见
+	// 装配仓库 docs/plans/04b-部署矩阵验证.md Task 5 的真机确认。
 	specs := make([]shell.ModuleSpec, 0, len(members))
 	for _, m := range members {
 		ctor, ok := moduleRegistry[m.ComponentID]

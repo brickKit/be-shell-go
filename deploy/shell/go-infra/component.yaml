@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: shell/go-infra
   name: Go 外壳三（infra/integration 基础设施域）
-  version: 0.5.3                     # 同 shell/go-core：直接复用 be-shell-go 这个
+  version: 0.5.4                     # 同 shell/go-core：直接复用 be-shell-go 这个
                                       # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像。
                                       # v0.5.0 曾把 shellConfigJson 与 v0.4.8 新增的 6 个
                                       # 秘钥类 configSchema 项一并退休；v0.5.1 因为真机复现
@@ -20,8 +20,17 @@ metadata:
                                       # 值，每个成员自己的每个 config 值改走外壳进程环境里一条
                                       # 独立的、带组件 ID 前缀的标量变量，不再嵌在 JSON 字符串
                                       # 内部——sanitizeServedMembersConfig 这层下游兜底因此
-                                      # 也整个删除，完整根因分析见 docs/plans/04b-验证记录.md
-                                      # Task 0.6
+                                      # 也整个删除；v0.5.4：修正一处失实注释——
+                                      # BRICKKIT_SERVED_MEMBERS_CONFIG 数组顺序是 brickKit
+                                      # 按 componentId 字典序排的（internal/shell/shell.go
+                                      # 的 sort.Slice），不是 brickkit.yaml 里 servedBy 的
+                                      # 声明顺序，也不是任何拓扑序——真机 docker exec 核对过：
+                                      # go-core 声明顺序是 mdm/customer→mdm/product→erp/
+                                      # inventory→erp/finance→erp/sales，生成的数组顺序是
+                                      # erp/finance→erp/inventory→erp/sales→mdm/customer→
+                                      # mdm/product。这不影响正确性（迁移之间没有跨 schema
+                                      # 外键，Start() 并发跑不依赖顺序），完整根因分析见
+                                      # docs/plans/04b-验证记录.md Task 0.6
   description: 把 infra/authz、infra/iam-casdoor、infra/workflow、infra/notification、integration/im-dingtalk 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -52,7 +61,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.3
+  image: brickenterprise/be-shell-go:0.5.4
   port: 8224                         # registry/ports.tsv，_shell-go-infra 行
   labels:                            # 同 shell/go-core：成员自己的 prometheus.io/port
                                       # 已删掉，合并后指标只走外壳这一个共享端口

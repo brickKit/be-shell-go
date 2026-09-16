@@ -9,7 +9,7 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.5.3                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.5.4                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.5.0：brickKit v0.4.2 起
@@ -22,7 +22,11 @@ metadata:
                                       # 升版本）；v0.5.3：brickKit v0.4.3 从根上修好了这个
                                       # bug（config 字段改名 configEnvVars，只携带变量名不
                                       # 携带值），本仓库自己的 sanitizeServedMembersConfig
-                                      # 下游兜底整个删除，完整根因见 shell/go-infra 的
+                                      # 下游兜底整个删除；v0.5.4：修正一处失实注释——
+                                      # BRICKKIT_SERVED_MEMBERS_CONFIG 数组顺序是 brickKit
+                                      # 按 componentId 字典序排的，不是 brickkit.yaml 里
+                                      # servedBy 的声明顺序，也不是任何拓扑序（真机
+                                      # docker exec 核对过），完整根因见 shell/go-infra 的
                                       # configSchema 注释与 docs/plans/04b-验证记录.md
                                       # Task 0.6
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
@@ -68,7 +72,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.3
+  image: brickenterprise/be-shell-go:0.5.4
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见

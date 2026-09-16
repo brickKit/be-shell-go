@@ -75,9 +75,14 @@ type Config struct {
 	// docs/design/_调研记录/04-阶段四.md），外壳只需要配一次。
 	IamJwksURL     string
 	AuthzBundleURL string
-	// Modules 的顺序即迁移与启动顺序——调用方（cmd/shell/main.go）负责
-	// 传入拓扑序，Run 本身不做依赖排序（同设计书 §13.8.3："外壳内部的
-	// 模块顺序由你的框架负责"）。
+	// Modules 的顺序即迁移的执行顺序（Run 本身不做依赖排序，也不假设
+	// 调用方传的是拓扑序）——⚠️ 调用方（cmd/shell/main.go）现在传入的
+	// 实际是 BRICKKIT_SERVED_MEMBERS_CONFIG 里 brickKit 自己按
+	// componentId 字典序排过的顺序，不是 brickkit.yaml 里 servedBy 的
+	// 声明顺序，也不是任何真正的拓扑序（真机核对过，见 cmd/shell/
+	// main.go 对应注释）。这不影响正确性——迁移之间没有跨 schema 外键
+	// （设计书 §11.2.3），顺序只决定"谁先跑"，不决定"谁能不能跑"；
+	// Start() 本身用 errgroup 并发跑，从来不依赖 Modules 的顺序。
 	Modules []ModuleSpec
 	// HealthPort 是外壳自己（不是任何一个模块）对外暴露的健康检查端口。
 	// 设计书 §13.6："健康检查……一个容器只有一个 probe"——但外壳里的
