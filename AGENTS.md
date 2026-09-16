@@ -7,7 +7,7 @@
 | 仓库名 | `be-shell-go` |
 | 目录 | `shells/go/`（不进 `brickkit.yaml`，不是 brickKit 组件） |
 | 语言 / 框架 | Go；只依赖 `be-sdk-go`、`golang-migrate`（`iofs` 源驱动）、`golang.org/x/sync/errgroup` |
-| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——**全部 11 个**都已在 `internal/shell/real_modules_test.go` 里真机验证过合并进程；`brickkit.yaml` 已从 `local: true` 全量切到真实 `servedBy`（阶段四附加 Task 0.4，外壳本身也是真实 brickKit 组件，见 `shells/go/deploy/shell/*/component.yaml`）；`cmd/shell/main.go` 解析平台原生注入的 `BRICKKIT_SERVED_MEMBERS_CONFIG`（brickKit v0.4.2 起原生支持，取代了此前 `be-ops shell-config` 手工生成、贴进 `configSchema` 的 `SHELL_CONFIG_JSON`，阶段四附加 Task 0.6）装配 `Config.Modules`，真机起过 4 个外壳容器，见 `README.md` |
+| 装的模块 | 阶段四：11 个 Go 组件（`mdm-customer`/`mdm-product`/`erp-inventory`/`erp-finance`/`erp-sales`/`infra-authz`/`infra-iam-casdoor`/`infra-workflow`/`infra-notification`/`integration-im-dingtalk`/`crm-opportunity`）——**全部 11 个**都已在 `internal/shell/real_modules_test.go` 里真机验证过合并进程；`brickkit.yaml` 已从 `local: true` 全量切到真实 `servedBy`（阶段四附加 Task 0.4，外壳本身也是真实 brickKit 组件，见 `shells/go/deploy/shell/*/component.yaml`）；`cmd/shell/main.go` 解析平台原生注入的 `BRICKKIT_SERVED_MEMBERS_CONFIG`（brickKit v0.4.2 起原生支持，取代了此前 `be-ops shell-config` 手工生成、贴进 `configSchema` 的 `SHELL_CONFIG_JSON`，阶段四附加 Task 0.6；v0.4.3 起 `config` 字段改名 `configEnvVars`，只携带变量名不携带值，从根上修好了密钥类值撑坏 JSON 的坑）装配 `Config.Modules`，真机起过 4 个外壳容器，见 `README.md` |
 | 设计真相源 | 《BrickEnterprise 设计书.md》第 13 章（为什么、七条铁律、代价）+ `docs/plans/04-阶段四-做外壳验拆回.md`（本仓库具体要做什么）+ `docs/design/_调研记录/04-阶段四.md`（技术判断的推演过程）——本文件与它们冲突时，以那三份为准 |
 
 ## 这个仓库存在的唯一理由
@@ -42,9 +42,13 @@
 - `Config.Modules` 已经真实装配（`cmd/shell/main.go` 解析平台原生注入的
   `BRICKKIT_SERVED_MEMBERS_CONFIG`——一个 JSON 数组，每个元素是这次真的被
   这个外壳收编的成员，含 `componentId`/`version`/`httpPort`/`extraPorts`/
-  合并后的 `config`，`config` 键是原始 configSchema 驼峰 key，需要
-  `configEnvVarName` 转成 `SCREAMING_SNAKE_CASE` 才能被 `besdk.Config`
-  正确查到），`Config.PGDSN`/`NATSURL`/`IamJwksURL`/`AuthzBundleURL`
+  `configEnvVars`。`configEnvVars` 携带的是**变量名，不是值**（brickKit
+  v0.4.3 起的形状）：键是原始 configSchema 驼峰 key，值是外壳进程环境里
+  那条真正携带值的独立变量名（`{EnvPrefix(componentId)}_{大写下划线名}`，
+  跟 `*_ENDPOINT` 同一套前缀算法）——本文件先 `os.Getenv` 那条变量名拿到
+  真实值，再用 `configEnvVarName` 把原始驼峰 key 转成 `SCREAMING_SNAKE_CASE`
+  存进 `ModuleSpec.Env`，`besdk.Config` 按这个短名查表），
+  `Config.PGDSN`/`NATSURL`/`IamJwksURL`/`AuthzBundleURL`
   仍然是靠 `cmd/shell/main.go` 读容器自己的环境变量（`DATABASE_*`/`MQ_*`/
   `IAM_JWKS_URL`/`AUTHZ_BUNDLE_URL`）——这些是"外壳这个容器本身"的身份，不是任何
   一个模块的数据，本来就不该来自模块自己的 `Config`（见
@@ -62,19 +66,16 @@
   ⚠️ 健康检查命令是普通 `wget -q -O /dev/null`，不是 `--spider`——那个坑是
   Python 侧才踩到的（FastAPI 的 `GET /` 不支持 HEAD），但两边的 Dockerfile/
   compose 判据保持一致，不要为了"Go 这边其实没事"就改回 `--spider`。
-- ⚠️ **`BRICKKIT_SERVED_MEMBERS_CONFIG` 里密钥类的值可能带着裸控制
-  字符**：真机 `brickkit up` 复现出——密钥类 config 值在 `brickkit.yaml`
-  里写的是 `${VAR}` 占位符，docker compose 读取生成好的
-  `docker-compose.yaml` 时会对整份文件按纯文本做 `${VAR}` 替换，不知道
-  某个 `${VAR}` 恰好嵌在这份 JSON 字符串内部，真实密钥（PEM 私钥）自带
-  原始换行符，替换进去会把 JSON 从中间断开。`cmd/shell/main.go` 的
-  `sanitizeServedMembersConfig` 在 `json.Unmarshal` 之前把 JSON 字符串
-  **内部**的裸控制字符转义回合法形式来根治这个问题（不区分是哪个 key，
-  普适性修复）——不是靠"密钥类值另开一条路"这种绕过办法，
-  `envWithProcessFallback` 已经不需要存在。见 `README.md`"Task 0.6"
-  一节的完整时间线，完整根因分析在 `sanitizeServedMembersConfig` 本体
-  注释里。这是 `BRICKKIT_SERVED_MEMBERS_CONFIG` 机制本身的普适性设计
-  缺口，已反馈给 brickKit。
+- ⚠️ **密钥类 config 值不再经过 JSON 字符串，brickKit v0.4.3 从根上修好了**：
+  我们真机 `brickkit up` 复现过密钥类 config 值（`${VAR}` 占位符）被
+  docker compose 自己的全文本 `${VAR}` 替换撑坏 `BRICKKIT_SERVED_MEMBERS_CONFIG`
+  这份 JSON 的 bug，反馈给 brickKit 之后，v0.4.3 把 `config` 字段改名
+  `configEnvVars`（携带变量名而不是值，每个成员自己的每个 config 值改走
+  外壳进程环境里一条独立的、带组件 ID 前缀的标量变量，`${VAR}` 占位符的
+  展开完全交给 docker compose，不再嵌在任何结构化字符串内部）——本仓库
+  曾经先后加过 `envWithProcessFallback`（v0.5.1）、`sanitizeServedMembersConfig`
+  （v0.5.2）两层下游兜底，v0.4.3 上线后两层都已经整个删除，不需要任何
+  下游修复。见 `README.md`"Task 0.6"一节的完整时间线。
 - 跨外壳的依赖地址（`*_ENDPOINT`）**已经真机触发验证过**（`go-core`/
   `go-backoffice` 跨容器请求 `go-infra` 暴露的 `authzBundleUrl`/`iamJwksUrl`），
   不再是"大概率不会被触发"的推演状态——`docs/design/_调研记录/04-阶段四.md` §4/§12

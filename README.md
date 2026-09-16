@@ -339,3 +339,34 @@ JSON 字符串内部）——本仓库这边的 `sanitizeServedMembersConfig` �
 `${VAR}` 解析、转义都做完，不留字面量占位符给 docker compose 再动一次
 手——已写成反馈文档给 brickKit。真机复核结果见父仓库
 `docs/plans/04b-验证记录.md` Task 0.6。
+
+## 现状补充（阶段四附加 Task 0.6 三度收尾，2026-09-16）——brickKit v0.4.3 从根上修好，`sanitizeServedMembersConfig` 整个删除
+
+brickKit 看完反馈文档后没有直接采纳我们提的两个方向（提前展开进 JSON、
+转义成 `$$`），而是换了一个从根上消除整类问题的设计，写成方案文档发回
+来请我们评审（`docs/dev/brickKit回复-BRICKKIT_SERVED_MEMBERS_CONFIG密钥问题的修复方案(请评审).md`，
+已在 v0.4.3 上线后删除）：`BRICKKIT_SERVED_MEMBERS_CONFIG` 的 `config`
+字段改名 `configEnvVars`，语义从"key → 值"变成"key → 外壳进程环境里
+那条独立变量的名字"——每个成员自己的每个 config 值，各自生成一条独立
+的、`{EnvPrefix(componentId)}_{EnvVarName(key)}` 命名的标量环境变量
+（跟 `*_ENDPOINT` 同一套前缀算法、同一套碰撞检测），`${VAR}` 占位符
+语义完全不变，继续交给 docker compose 自己展开——不再嵌在任何结构化
+字符串内部，这一整类"值可能是 `${VAR}` 却被塞进另一个必须保持结构完整
+的字符串里"的问题，从数据形状上就不存在了。
+
+评审确认这个方案可以直接接受（两步查找 `configEnvVars[key]` 拿变量名
+→ `os.Getenv` 拿值，比我们自己的状态机 sanitizer 还简单），v0.4.3 上线
+当天完成迁移：`cmd/shell/main.go` 的 `servedMemberConfig.Config` 字段
+改名 `ConfigEnvVars`（json tag 同步改 `configEnvVars`），`buildModules`
+从直接读 JSON 里的值改成 `os.Getenv(m.ConfigEnvVars[key])`，
+`sanitizeServedMembersConfig` 函数（连同它的两条回归测试）整个删除——
+这层下游兜底彻底不需要了，因为 JSON 里已经不可能再出现任何可能是
+`${VAR}` 的用户可控文本。`configEnvVarName` 函数保留，但用途收窄成
+"给本文件自己组装 `ModuleSpec.Env` 的 key"，不再用于（也从来不需要）
+重新计算 brickKit 已经算好的那条带前缀变量名。
+
+新增 `TestBuildModules_密钥类值真的带换行符也能正确流转`，验证一个真实
+带换行符的密钥值（PEM 私钥）在新形状下能原样流转——它现在完全是一条
+普通的进程环境变量，不经过 JSON 字符串，不需要任何转义/反转义。
+`go build`/`go vet`/`go test -race` 全绿。真机验证与 brickKit 源码核查
+过程见父仓库 `docs/plans/04b-验证记录.md` Task 0.6。

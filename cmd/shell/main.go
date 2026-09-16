@@ -8,25 +8,37 @@
 // ⚠️ 阶段四附加 Task 0.6（brickKit v0.4.2）：哪些模块属于这个外壳、
 // 端口/config 值，现在全部来自平台原生注入的 BRICKKIT_SERVED_MEMBERS_CONFIG
 // ——一个 JSON 数组，每个元素是当前这次部署里真的被这个外壳收编的一个
-// 成员（componentId/version/httpPort/extraPorts/合并后的 config，config
-// 键是原始 configSchema 驼峰 key，不是转换后的环境变量名）。这条数据
-// brickKit 自己在算 BRICKKIT_SERVED_MEMBERS 的同一处代码里就已经算好，
-// 直接原生注入外壳容器——取代了此前 be-ops shell-config 命令手工生成、
-// 手工贴进 brickkit.yaml 该外壳组件 config.shellConfigJson 字符串配置项
-// 那一整套机制（那套机制的已知缺陷：brickkit.yaml 一改版本号/config/
-// servedBy 归属就会过期，平台不报错，只在外壳真机启动时才炸——这正是
-// 反馈给 brickKit、促成这次原生支持的真实动机，见装配仓库
+// 成员（componentId/version/httpPort/extraPorts）。这条数据 brickKit 自己
+// 在算 BRICKKIT_SERVED_MEMBERS 的同一处代码里就已经算好，直接原生注入
+// 外壳容器——取代了此前 be-ops shell-config 命令手工生成、手工贴进
+// brickkit.yaml 该外壳组件 config.shellConfigJson 字符串配置项那一整套
+// 机制（那套机制的已知缺陷：brickkit.yaml 一改版本号/config/servedBy
+// 归属就会过期，平台不报错，只在外壳真机启动时才炸——这正是反馈给
+// brickKit、促成这次原生支持的真实动机，见装配仓库
 // docs/dev/架构复盘-servedBy落地后的自有改进空间.md）。
 //
-// 这个文件现在只负责两件事：①把 BRICKKIT_SERVED_MEMBERS_CONFIG 里每个
-// 成员的 config 键从原始驼峰形式转成 besdk.Config 内部查找用的
-// SCREAMING_SNAKE_CASE（brickKit 自己不做这一步转换，交给外壳实现者，
-// 见 shell-implementers-guide 的原文说明——转换算法与 brickKit 自己的
-// internal/inject.EnvVarName 逐字对应）；②把数据里的 componentId 字符串
-// 映到真实的 Go 源码 import（这一步不能数据驱动，ModuleSpec.New 必须是
-// 静态 import，见 internal/shell.ModuleSpec 的字段注释）。除此之外不做
-// 任何装配决策——哪个组件该不该合并、合并成几个外壳，那是
-// assembly.yaml/registry/schemas.tsv 的既定数据，不是这个文件该决定的。
+// ⚠️ 阶段四附加 Task 0.6 二次修补（brickKit v0.4.3）：`config` 字段改名
+// `configEnvVars`，语义从"key → 值"变成"key → 环境变量名"——每个成员
+// 自己的每个 config 值，现在各自是外壳进程环境里一条独立的、带组件 ID
+// 前缀命名的标量变量（`{EnvPrefix(componentId)}_{EnvVarName(key)}`，跟
+// `*_ENDPOINT` 走同一套前缀算法），不再嵌在 JSON 字符串内部——这是
+// brickKit 从根上修复了我们真机复现、反馈给他们的那个"密钥类 config 值
+// 会被 docker compose 自己的全文本 `${VAR}` 替换撑坏 JSON"的 bug，见
+// docs/plans/04b-验证记录.md Task 0.6。本文件因此不再需要
+// `sanitizeServedMembersConfig` 这层下游兜底——JSON 里永远不会再出现
+// 任何可能是 `${VAR}` 的用户可控文本。
+//
+// 这个文件现在只负责三件事：①对每个成员的每个 config key，读
+// `configEnvVars[key]` 拿到 brickKit 算好的变量名，再 `os.Getenv` 去
+// 外壳自己的进程环境读真正的值；②把 key 从原始驼峰形式转成 besdk.Config
+// 内部查找用的 SCREAMING_SNAKE_CASE（转换算法与 brickKit 自己的
+// internal/inject.EnvVarName 逐字对应，仅供本文件自己内部组装
+// ModuleSpec.Env 用，不用于重新计算 brickKit 已经算好的那条变量名）；
+// ③把数据里的 componentId 字符串映到真实的 Go 源码 import（这一步不能
+// 数据驱动，ModuleSpec.New 必须是静态 import，见 internal/shell.ModuleSpec
+// 的字段注释）。除此之外不做任何装配决策——哪个组件该不该合并、合并成
+// 几个外壳，那是 assembly.yaml/registry/schemas.tsv 的既定数据，不是这个
+// 文件该决定的。
 //
 // ⚠️ 阶段四附加 Task 0.2/0.3：依赖地址（*_ENDPOINT）由 brickKit 自己在
 // 生成阶段直接合并进外壳容器自己的 os.Environ()，这个进程一启动就已经
@@ -99,10 +111,12 @@ type servedMemberConfig struct {
 		Name string `json:"name"`
 		Port int    `json:"port"`
 	} `json:"extraPorts"`
-	// Config 是这个模块自己合并后的配置——键是原始 configSchema 驼峰
-	// key（brickKit 刻意不做大写下划线转换，交给外壳实现者自己处理，
-	// 见 shell-implementers-guide 原文）。
-	Config map[string]string `json:"config"`
+	// ConfigEnvVars 把这个模块自己 configSchema 的每个 key（原始驼峰
+	// 形式）映射到外壳进程环境里那条真正携带值的独立变量名——不是值
+	// 本身（brickKit v0.4.3 起的既定形状，见 shell-implementers-guide
+	// 原文："读 configEnvVars[key] 拿到变量名，再去自己的环境里读那条
+	// 变量拿到真正的值"）。
+	ConfigEnvVars map[string]string `json:"configEnvVars"`
 }
 
 func main() {
@@ -158,7 +172,7 @@ func buildModules() ([]shell.ModuleSpec, error) {
 	}
 
 	var members []servedMemberConfig
-	if err := json.Unmarshal([]byte(sanitizeServedMembersConfig(raw)), &members); err != nil {
+	if err := json.Unmarshal([]byte(raw), &members); err != nil {
 		return nil, fmt.Errorf("解析 BRICKKIT_SERVED_MEMBERS_CONFIG 失败: %w", err)
 	}
 
@@ -174,15 +188,17 @@ func buildModules() ([]shell.ModuleSpec, error) {
 
 		// pgSchema 要在转换成 SCREAMING_SNAKE_CASE 之前，按原始驼峰 key
 		// 取——它是每个组件都有的既定配置项（registry/schemas.tsv 的值），
-		// 不是可选字段。
-		schema := m.Config["pgSchema"]
-		if schema == "" {
+		// 不是可选字段。ConfigEnvVars 给的是变量名，真正的值要再
+		// os.Getenv 一次。
+		schemaVarName, ok := m.ConfigEnvVars["pgSchema"]
+		schema := os.Getenv(schemaVarName)
+		if !ok || schema == "" {
 			return nil, fmt.Errorf("组件 %s 的 config 里没有 pgSchema——BRICKKIT_SERVED_MEMBERS_CONFIG 的数据看起来不完整", m.ComponentID)
 		}
 
-		env := make(map[string]string, len(m.Config))
-		for key, value := range m.Config {
-			env[configEnvVarName(key)] = value
+		env := make(map[string]string, len(m.ConfigEnvVars))
+		for key, varName := range m.ConfigEnvVars {
+			env[configEnvVarName(key)] = os.Getenv(varName)
 		}
 
 		extraPorts := make(map[string]int, len(m.ExtraPorts))
@@ -203,69 +219,14 @@ func buildModules() ([]shell.ModuleSpec, error) {
 	return specs, nil
 }
 
-// sanitizeServedMembersConfig 修复 docker compose 自己对 ${VAR} 做全文本
-// 替换时、在 JSON 字符串内部留下的原始控制字符——真机 `brickkit up`
-// 复现出：brickKit 生成 BRICKKIT_SERVED_MEMBERS_CONFIG 这份 JSON 的那一刻，
-// Go 自己的 encoding/json 保证字符串内部不会有任何未转义的控制字符（换行
-// 会被正确编码成两个字符的 `\n`）；但密钥类 config 值在 brickkit.yaml 里
-// 写的是 `${VAR}` 占位符，docker compose 读取生成好的 docker-compose.yaml
-// 时会对整份文件按纯文本做 `${VAR}` 替换，不知道也不关心某个 `${VAR}`
-// 恰好嵌在这份 JSON 字符串内部——真实密钥（比如 appTokenSigningKeyPem
-// 那份 PEM）自带原始换行符，替换进去就在"合法 JSON 字符串内部绝不会自己
-// 出现"的位置制造出裸控制字符。
-//
-// ⚠️ 只转义**字符串内部**的控制字符，不能不分场合整段替换——字符串外部
-// 的裸换行/空白本来就是合法 JSON（比如手写测试数据为了可读性跨行），
-// 把那些也转义反而会把"合法的格式化空白"变成"字符串外面出现的非法转义
-// 序列"，弄巧成拙。用一个只关心"现在在不在字符串里面"的最小状态机
-// （遇到未转义的 `"` 切换状态，`\\` 时跳过下一个字符防止误判转义序列）
-// 来分辨，不需要理解 JSON 的其余语法。
-func sanitizeServedMembersConfig(raw string) string {
-	var b strings.Builder
-	b.Grow(len(raw))
-	inString := false
-	runes := []rune(raw)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		if inString && r == '\\' && i+1 < len(runes) {
-			// 转义序列（`\"`、`\\`、`\n` 字面两字符……）原样透传两个 rune，
-			// 不当成需要处理的裸控制字符，也不能让下一个字符误触发
-			// "遇到 `"` 切换字符串状态"。
-			b.WriteRune(r)
-			i++
-			b.WriteRune(runes[i])
-			continue
-		}
-		if r == '"' {
-			inString = !inString
-			b.WriteRune(r)
-			continue
-		}
-		if inString {
-			switch r {
-			case '\n':
-				b.WriteString(`\n`)
-				continue
-			case '\r':
-				b.WriteString(`\r`)
-				continue
-			case '\t':
-				b.WriteString(`\t`)
-				continue
-			}
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
 // configEnvVarName 把一个原始 configSchema 驼峰 key 转成
 // SCREAMING_SNAKE_CASE——跟 besdk.Config 内部查找配置项时用的转换规则
 // （camelCase → 大写下划线）逐字对应，也是 brickKit 自己
-// internal/inject.EnvVarName 的算法，这里原样复刻（brickKit 刻意不在
-// BRICKKIT_SERVED_MEMBERS_CONFIG 里做这一步转换，交给外壳实现者自己
-// 处理，见 shell-implementers-guide 原文："config 键是原始 configSchema
-// key，不是转换后的环境变量名"）。
+// internal/inject.EnvVarName 的算法，这里原样复刻。⚠️ 用途仅限于本文件
+// 组装 ModuleSpec.Env 的 key（besdk.Config 按这个短名查表）——不用于
+// 重新计算 BRICKKIT_SERVED_MEMBERS_CONFIG 里 configEnvVars 已经给出的
+// 那条带组件 ID 前缀的变量名（那条名字直接从 JSON 读，brickKit v0.4.3
+// 起已经算好，本文件只管拿它去 os.Getenv，不用自己再拼一遍）。
 func configEnvVarName(key string) string {
 	var b strings.Builder
 	runes := []rune(key)

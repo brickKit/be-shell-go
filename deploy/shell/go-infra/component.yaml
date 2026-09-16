@@ -4,18 +4,24 @@ kind: Component
 metadata:
   id: shell/go-infra
   name: Go 外壳三（infra/integration 基础设施域）
-  version: 0.5.2                     # 同 shell/go-core：直接复用 be-shell-go 这个
+  version: 0.5.3                     # 同 shell/go-core：直接复用 be-shell-go 这个
                                       # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像。
                                       # v0.5.0 曾把 shellConfigJson 与 v0.4.8 新增的 6 个
                                       # 秘钥类 configSchema 项一并退休；v0.5.1 因为真机复现
                                       # docker compose 对 ${VAR} 做全文本替换撑坏 JSON 而
                                       # 短暂恢复过这 6 项，但那次恢复治标不治本（撑坏 JSON 的
                                       # 是 infra/iam-casdoor 自己那条 config 记录，外壳自己
-                                      # 多存一份不会让它消失）；v0.5.2 找到真正的根治办法——
-                                      # cmd/shell/main.go 新增 sanitizeServedMembersConfig，
-                                      # 在 json.Unmarshal 之前把 JSON 字符串内部被替换进来的
-                                      # 裸控制字符转义回合法形式，这 6 项因此再次删除，完整
-                                      # 根因分析见 docs/plans/04b-验证记录.md Task 0.6
+                                      # 多存一份不会让它消失）；v0.5.2 用 cmd/shell/main.go
+                                      # 新增的 sanitizeServedMembersConfig 下游兜底根治过一次
+                                      # （在 json.Unmarshal 之前把 JSON 字符串内部被替换进来
+                                      # 的裸控制字符转义回合法形式）；v0.5.3：brickKit v0.4.3
+                                      # 从根上修好了这个 bug——BRICKKIT_SERVED_MEMBERS_CONFIG
+                                      # 的 config 字段改名 configEnvVars，只携带变量名不携带
+                                      # 值，每个成员自己的每个 config 值改走外壳进程环境里一条
+                                      # 独立的、带组件 ID 前缀的标量变量，不再嵌在 JSON 字符串
+                                      # 内部——sanitizeServedMembersConfig 这层下游兜底因此
+                                      # 也整个删除，完整根因分析见 docs/plans/04b-验证记录.md
+                                      # Task 0.6
   description: 把 infra/authz、infra/iam-casdoor、infra/workflow、infra/notification、integration/im-dingtalk 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -46,7 +52,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.2
+  image: brickenterprise/be-shell-go:0.5.3
   port: 8224                         # registry/ports.tsv，_shell-go-infra 行
   labels:                            # 同 shell/go-core：成员自己的 prometheus.io/port
                                       # 已删掉，合并后指标只走外壳这一个共享端口
