@@ -59,7 +59,7 @@
   原生注入（brickKit v0.4.2 起，阶段四附加 Task 0.6），不需要我们自己
   再手工生成/维护一份平行数据——此前 `SHELL_CONFIG_JSON` + `be-ops
   shell-config` 那一整套机制（阶段四附加 Task 0.4）已经整个退休，历史
-  记录见父仓库 `docs/plans/04b-验证记录.md` Task 0.4/0.6。
+  记录见父仓库 `docs/plans/05a-迁移到servedBy.md` Task 0.4/0.6。
   `infra/shell-compose.yml`/`make shell-gen`/`make shell-up` 那一套更早的
   手写编排也已经退休（父仓库 Task 0.5，`brickkit up --ignore-served-by`
   取代了它验证组件独立性的用途）。

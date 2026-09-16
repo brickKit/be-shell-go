@@ -138,7 +138,7 @@ brickKit 新增了 `servedBy` 机制（组件声明"我的工作负载由外壳�
 逗号分隔的版本化服务名）筛一遍——`shell-config.json` 现在表达的是"这个外壳理论上有哪些成员"，不再
 等价于"这次都被收编了"。每个模块自己的 `configSchema` 解析结果（原来 `shell-env.json` 的 `Env` 字段）
 也一并挪进了 `shell-config.json` 新增的 `Config` 字段（`be-ops` 侧的完整调研过程见装配仓库
-`docs/plans/04b-验证记录.md` Task 0.2）。
+`docs/plans/05a-迁移到servedBy.md` Task 0.2）。
 
 ## 现状补充（阶段四附加 Task 0.4 完成，2026-09-15）——SHELL_CONFIG_JSON 从"文件路径"改成"内容本身"
 
@@ -156,7 +156,7 @@ manifest 模型**没有 `volumes` 字段**——servedBy 外壳完全没有"挂�
 本身还留着，用于 `shell.Config.ShellName`/日志和三个 Go 外壳实例的运行时身份区分（configSchema 的
 `shellName` 项）。
 
-完整过程与真机复核结果见装配仓库 `docs/plans/04b-验证记录.md` Task 0.4。
+完整过程与真机复核结果见装配仓库 `docs/plans/05a-迁移到servedBy.md` Task 0.4。
 
 ## 现状补充（阶段四 Task 8 完成，2026-09-13）
 
@@ -247,7 +247,7 @@ schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只�
   （`DATABASE_*` 类，可能标了密钥身份，该走 K8s Secret）。
 - 新增 `brickkit up --ignore-served-by`（父仓库 `Makefile` 的
   `teardown-up`/`teardown-down` 已经改用它，见父仓库
-  `docs/plans/04b-验证记录.md` Task 0.6，不是本仓库的事）。
+  `docs/plans/05a-迁移到servedBy.md` Task 0.6，不是本仓库的事）。
 
 本仓库这边的改动：`cmd/shell/main.go` 改成直接解析
 `BRICKKIT_SERVED_MEMBERS_CONFIG`（不再需要单独按
@@ -264,7 +264,7 @@ schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只�
 （以及 `go-infra` Task 0.4 新增的 6 个秘钥类 configSchema 项）——
 `be-ops shell-config` 子命令、`SHELL_CONFIG_JSON`/密钥兜底机制两条线
 都已经没有存在的理由。真机复核结果见父仓库
-`docs/plans/04b-验证记录.md` Task 0.6。
+`docs/plans/05a-迁移到servedBy.md` Task 0.6。
 
 ## 现状补充（阶段四附加 Task 0.6 修补，2026-09-15）——`envWithProcessFallback` 与 6 个密钥类 configSchema 项恢复
 
@@ -302,7 +302,7 @@ envWithProcessFallback` 与它的回归测试原样恢复；`shell/go-infra` 的
 `BRICKKIT_SERVED_MEMBERS_CONFIG`——这部分真机验证过是正确的，本节
 只收窄了 Task 0.6 声称的范围，没有推翻整个迁移。三个 Go 外壳的镜像
 版本一并升到 v0.5.1（共用同一份镜像）。真机复核结果见父仓库
-`docs/plans/04b-验证记录.md` Task 0.6。
+`docs/plans/05a-迁移到servedBy.md` Task 0.6。
 
 ## 现状补充（阶段四附加 Task 0.6 根治，2026-09-15）——上一节的修补方向站不住脚，真正的修复是 `sanitizeServedMembersConfig`
 
@@ -338,7 +338,7 @@ JSON 字符串内部）——本仓库这边的 `sanitizeServedMembersConfig` �
 下游兜底，正确的长期修复应该在 brickKit 自己生成这份 JSON 时就把
 `${VAR}` 解析、转义都做完，不留字面量占位符给 docker compose 再动一次
 手——已写成反馈文档给 brickKit。真机复核结果见父仓库
-`docs/plans/04b-验证记录.md` Task 0.6。
+`docs/plans/05a-迁移到servedBy.md` Task 0.6。
 
 ## 现状补充（阶段四附加 Task 0.6 三度收尾，2026-09-16）——brickKit v0.4.3 从根上修好，`sanitizeServedMembersConfig` 整个删除
 
@@ -369,4 +369,4 @@ brickKit 看完反馈文档后没有直接采纳我们提的两个方向（提�
 带换行符的密钥值（PEM 私钥）在新形状下能原样流转——它现在完全是一条
 普通的进程环境变量，不经过 JSON 字符串，不需要任何转义/反转义。
 `go build`/`go vet`/`go test -race` 全绿。真机验证与 brickKit 源码核查
-过程见父仓库 `docs/plans/04b-验证记录.md` Task 0.6。
+过程见父仓库 `docs/plans/05a-迁移到servedBy.md` Task 0.6。
