@@ -9,7 +9,7 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.5.5                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.5.6                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.5.0：brickKit v0.4.2 起
@@ -32,7 +32,12 @@ metadata:
                                       # 版本追平到组件仓库当前发布的版本（此前全部漂移，
                                       # be-acceptance 新增的 dependency-version-scan 第三类
                                       # 扫描抓出来的，05b Task 4c 真机确认；只涉及依赖版本号，
-                                      # 后端代码本身在这段版本差里没有改动，无业务行为变化）
+                                      # 后端代码本身在这段版本差里没有改动，无业务行为变化）；
+                                      # v0.5.6：v0.5.5 只改了这里的 version 字段，忘了同步改
+                                      # 下面 deployment.image 的镜像 tag（两个字段各自独立，
+                                      # 平台不会替我们同步）——`brickkit up` 全程不校验这一点，
+                                      # 一直悄悄拉旧镜像，05b 复测时才发现。这里补上，并从
+                                      # 真实运行中的容器直接 docker cp 二进制验证过
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -76,7 +81,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.5
+  image: brickenterprise/be-shell-go:0.5.6
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见
