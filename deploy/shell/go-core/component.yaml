@@ -76,7 +76,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.4
+  image: brickenterprise/be-shell-go:0.5.5
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见
