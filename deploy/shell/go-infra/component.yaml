@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: shell/go-infra
   name: Go 外壳三（infra/integration 基础设施域）
-  version: 0.5.4                     # 同 shell/go-core：直接复用 be-shell-go 这个
+  version: 0.5.5                     # 同 shell/go-core：直接复用 be-shell-go 这个
                                       # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像。
                                       # v0.5.0 曾把 shellConfigJson 与 v0.4.8 新增的 6 个
                                       # 秘钥类 configSchema 项一并退休；v0.5.1 因为真机复现
@@ -30,7 +30,9 @@ metadata:
                                       # erp/finance→erp/inventory→erp/sales→mdm/customer→
                                       # mdm/product。这不影响正确性（迁移之间没有跨 schema
                                       # 外键，Start() 并发跑不依赖顺序），完整根因分析见
-                                      # docs/plans/04b-验证记录.md Task 0.6
+                                      # docs/plans/04b-验证记录.md Task 0.6；v0.5.5：go.mod
+                                      # 锁定的 11 个真实 Go 成员依赖版本追平到组件仓库当前
+                                      # 发布的版本，见 go-core 的注释
   description: 把 infra/authz、infra/iam-casdoor、infra/workflow、infra/notification、integration/im-dingtalk 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit

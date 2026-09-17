@@ -9,7 +9,7 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.5.4                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.5.5                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.5.0：brickKit v0.4.2 起
@@ -28,7 +28,11 @@ metadata:
                                       # servedBy 的声明顺序，也不是任何拓扑序（真机
                                       # docker exec 核对过），完整根因见 shell/go-infra 的
                                       # configSchema 注释与 docs/plans/04b-验证记录.md
-                                      # Task 0.6
+                                      # Task 0.6；v0.5.5：go.mod 锁定的 11 个真实 Go 成员依赖
+                                      # 版本追平到组件仓库当前发布的版本（此前全部漂移，
+                                      # be-acceptance 新增的 dependency-version-scan 第三类
+                                      # 扫描抓出来的，05b Task 4c 真机确认；只涉及依赖版本号，
+                                      # 后端代码本身在这段版本差里没有改动，无业务行为变化）
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit

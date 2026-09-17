@@ -4,18 +4,18 @@ go 1.25.11
 
 require (
 	github.com/brickKit/be-sdk-go v0.2.7
-	github.com/brickKit/crm-opportunity v1.0.10
-	github.com/brickKit/erp-finance v1.0.11
-	github.com/brickKit/erp-inventory v1.0.15
-	github.com/brickKit/erp-sales v1.0.23
-	github.com/brickKit/infra-authz v1.0.5
-	github.com/brickKit/infra-iam-casdoor v1.0.7
-	github.com/brickKit/infra-notification v1.0.3
-	github.com/brickKit/infra-workflow v1.0.3
-	github.com/brickKit/integration-im-dingtalk v1.0.4
-	github.com/brickKit/mdm-customer v1.0.7
+	github.com/brickKit/crm-opportunity v1.0.12
+	github.com/brickKit/erp-finance v1.0.13
+	github.com/brickKit/erp-inventory v1.0.17
+	github.com/brickKit/erp-sales v1.0.25
+	github.com/brickKit/infra-authz v1.0.7
+	github.com/brickKit/infra-iam-casdoor v1.0.9
+	github.com/brickKit/infra-notification v1.0.4
+	github.com/brickKit/infra-workflow v1.0.4
+	github.com/brickKit/integration-im-dingtalk v1.0.5
+	github.com/brickKit/mdm-customer v1.0.9
 	github.com/brickKit/mdm-customer/gen/mdm/customer v1.0.6
-	github.com/brickKit/mdm-product v1.0.8
+	github.com/brickKit/mdm-product v1.0.10
 	github.com/brickKit/mdm-product/gen/mdm/product v1.0.7
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
