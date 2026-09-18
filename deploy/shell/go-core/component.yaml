@@ -9,7 +9,7 @@ metadata:
                                       # 见 registry/README.md 规矩 3b、docs/plans/
                                       # 04b-验证记录.md Task 0.4）
   name: Go 外壳一（mdm/erp 核心域）
-  version: 0.5.8                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
+  version: 0.5.9                     # 直接复用 be-shell-go 这个 git 仓库自己的 tag，
                                       # 不另起一套版本号——镜像就是这个 tag 构建出来的
                                       # （shells/go/Makefile 的 image 目标），两者天生一致，
                                       # 不需要额外的对齐工作。v0.5.0：brickKit v0.4.2 起
@@ -42,6 +42,11 @@ metadata:
                                       # 到组件仓库当前发布的版本（scripts/seed.sh 改用共享库
                                       # infra/scripts/lib/seed-net.sh 这批改动触发，同 v0.5.5
                                       # 的既有判据，且这次记得同步改下面 deployment.image）。
+                                      # v0.5.9：删掉 README.md 里指向父仓库
+                                      # docs/dev/架构复盘-servedBy落地后的自有改进空间.md
+                                      # 的一条失效链接——那份文档因发现一（本轮改动）落地、
+                                      # 发现二/三早前已被 brickKit v0.4.2 取代，随父仓库这轮
+                                      # 提交一起删除，纯文档改动，无行为变化。
   description: 把 mdm/customer、mdm/product、erp/inventory、erp/finance、erp/sales 五个 Go 组件合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -85,7 +90,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.8
+  image: brickenterprise/be-shell-go:0.5.9
   port: 8090                         # 外壳自己的健康检查端口（registry/ports.tsv，
                                       # _shell-go-core 行）——不是任何一个成员的端口，
                                       # 成员各自的端口/地址走 servedBy 网络别名，见

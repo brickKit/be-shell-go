@@ -234,8 +234,7 @@ schema 的数据）物理上落在父仓库 `tools/be-acceptance/tier2/`（只�
 手工维护的数据就会过期——平台不报错，只在外壳真机启动时才炸（要么
 装错模块，要么直接 crash-loop，这次真机迁移复发了两次）。这个坑连同
 另一个"验证组件独立启动能力只能靠自己写脚本改 `brickkit.yaml` 再
-`git checkout` 恢复"的摩擦点，写成两份架构提案反馈给了 brickKit（见
-父仓库 `docs/dev/架构复盘-servedBy落地后的自有改进空间.md`），
+`git checkout` 恢复"的摩擦点，写成两份架构提案反馈给了 brickKit，
 **brickKit v0.4.2 完整采纳并实现**：
 
 - 新增保留变量 `BRICKKIT_SERVED_MEMBERS_CONFIG`——在算
