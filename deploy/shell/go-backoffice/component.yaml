@@ -4,7 +4,7 @@ kind: Component
 metadata:
   id: shell/go-backoffice
   name: Go 外壳二（crm/hrm 后台域）
-  version: 0.5.6                     # 同 shell/go-core：直接复用 be-shell-go 这个
+  version: 0.5.8                     # 同 shell/go-core：直接复用 be-shell-go 这个
                                       # git 仓库自己的 tag，三个 Go 外壳实例共用同一份镜像。
                                       # v0.5.0：shellConfigJson 退休；v0.5.1/v0.5.2：密钥类值
                                       # 撑坏 BRICKKIT_SERVED_MEMBERS_CONFIG 的 JSON 这个真机
@@ -13,7 +13,8 @@ metadata:
                                       # go-infra 的注释；v0.5.5：go.mod 锁定的 11 个真实 Go
                                       # 成员依赖版本追平到组件仓库当前发布的版本，见 go-core
                                       # 的注释；v0.5.6：补上 v0.5.5 漏改的 deployment.image
-                                      # 镜像 tag，见 go-core 的注释
+                                      # 镜像 tag，见 go-core 的注释；v0.5.8：go.mod 锁定的
+                                      # 8 个真实 Go 成员依赖版本再次追平，见 go-core 的注释
   description: 把 crm/opportunity 合并进一个进程——本身不含任何业务逻辑，纯装配（设计书第 13 章）
   license: Apache-2.0
   vendor: brickKit
@@ -44,7 +45,7 @@ configSchema:
 
 deployment:
   type: container
-  image: brickenterprise/be-shell-go:0.5.6
+  image: brickenterprise/be-shell-go:0.5.8
   port: 8116                         # registry/ports.tsv，_shell-go-backoffice 行
   labels:                            # 同 shell/go-core：成员自己的 prometheus.io/port
                                       # 已删掉，合并后指标只走外壳这一个共享端口
